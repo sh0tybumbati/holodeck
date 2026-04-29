@@ -16,31 +16,44 @@
         }
         #toolbar {
             position: absolute;
-            top: 10px;
-            left: 10px;
+            top: 5px;
+            left: 5px;
+            right: 5px;
             z-index: 100;
-            background: rgba(255, 255, 255, 0.9);
+            background: rgba(255, 255, 255, 0.95);
             border-radius: 8px;
-            padding: 10px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 8px 12px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
         }
-        .tool-section {
-            margin-bottom: 10px;
+        .toolbar-group {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding-right: 8px;
+            border-right: 1px solid #ddd;
         }
-        .tool-section h3 {
-            font-size: 12px;
-            margin-bottom: 5px;
+        .toolbar-group:last-child {
+            border-right: none;
+        }
+        .toolbar-label {
+            font-size: 11px;
             color: #555;
+            font-weight: 500;
+            margin-right: 4px;
         }
         .tool-btn {
             display: inline-block;
-            padding: 8px 12px;
-            margin: 2px;
+            padding: 6px 12px;
             background: #f0f0f0;
             border: 1px solid #ddd;
             border-radius: 4px;
             cursor: pointer;
             font-size: 12px;
+            white-space: nowrap;
         }
         .tool-btn:hover {
             background: #e0e0e0;
@@ -48,6 +61,14 @@
         .tool-btn.active {
             background: #4a90d9;
             color: white;
+        }
+        .tool-select {
+            padding: 6px 8px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            font-size: 12px;
+            background: white;
+            cursor: pointer;
         }
         #canvas-container {
             width: 100vw;
@@ -67,27 +88,19 @@
         /* Mobile styles */
         @media (max-width: 768px) {
             #toolbar {
-                top: 5px;
-                left: 5px;
-                right: 5px;
-                max-width: none;
-                padding: 8px;
+                padding: 6px 8px;
+                gap: 4px;
             }
-            .tool-section {
-                display: inline-block;
-                margin: 0 5px 5px 0;
-                vertical-align: top;
-            }
-            .tool-section h3 {
+            .toolbar-label {
                 font-size: 10px;
-                margin-bottom: 2px;
             }
             .tool-btn {
-                padding: 10px 8px;
-                margin: 1px;
+                padding: 8px 10px;
                 font-size: 11px;
-                min-width: 60px;
-                text-align: center;
+            }
+            .tool-select {
+                padding: 8px 6px;
+                font-size: 11px;
             }
             #status {
                 bottom: 5px;
@@ -96,45 +109,58 @@
                 font-size: 11px;
                 padding: 6px 10px;
             }
-            /* Touch-friendly mode indicator */
-            .touch-mode .tool-section {
-                margin: 0 3px 3px 0;
-            }
-        }
-        /* Larger touch targets for mobile */
-        @media (hover: none) and (pointer: coarse) {
-            .tool-btn {
-                padding: 12px 10px;
-                font-size: 12px;
-            }
         }
     </style>
 </head>
 <body>
     <div id="toolbar">
-        <div class="tool-section">
-            <h3>Add Primitive</h3>
+        <div class="toolbar-group">
+            <span class="toolbar-label">Add:</span>
             <div class="tool-btn" data-shape="cube">Cube</div>
             <div class="tool-btn" data-shape="sphere">Sphere</div>
             <div class="tool-btn" data-shape="cylinder">Cylinder</div>
             <div class="tool-btn" data-shape="cone">Cone</div>
         </div>
-        <div class="tool-section">
-            <h3>Boolean Operations</h3>
+        
+        <div class="toolbar-group">
+            <span class="toolbar-label">Boolean:</span>
             <div class="tool-btn" data-op="union">Union</div>
             <div class="tool-btn" data-op="subtract">Subtract</div>
         </div>
-        <div class="tool-section">
-            <h3>Export</h3>
+        
+        <div class="toolbar-group">
             <div class="tool-btn" id="export-stl">Export STL</div>
+            <div class="tool-btn" id="clear">Clear</div>
         </div>
-        <div class="tool-section">
-            <h3>Clear</h3>
-            <div class="tool-btn" id="clear">Clear All</div>
+        
+        <div class="toolbar-group">
+            <span class="toolbar-label">Grid:</span>
+            <div class="tool-btn" id="toggle-grid">Toggle</div>
+            <div class="tool-btn" id="unit-toggle">cm</div>
+        </div>
+        
+        <div class="toolbar-group">
+            <span class="toolbar-label">Snap:</span>
+            <select id="snap-precision" class="tool-select">
+                <option value="0.1">0.1mm</option>
+                <option value="1" selected>1mm</option>
+                <option value="5">5mm</option>
+                <option value="10">1cm</option>
+                <option value="25">2.5cm</option>
+                <option value="50">5cm</option>
+            </select>
+        </div>
+        
+        <div class="toolbar-group">
+            <span class="toolbar-label">Multi:</span>
+            <div class="tool-btn" id="merge-shapes">Merge</div>
+            <div class="tool-btn" id="align-edge">Edge</div>
+            <div class="tool-btn" id="align-center">Center</div>
+            <div class="tool-btn" id="distribute">Dist</div>
         </div>
     </div>
     <div id="canvas-container"></div>
-    <div id="status">Click shapes to select, drag to move. Use mouse wheel to zoom, middle-drag to pan.</div>
+    <div id="status">Click shapes to select, drag to move. Ctrl+Click to multi-select. Use mouse wheel to zoom, middle-drag to pan.</div>
 
     <script src="https://cdn.jsdelivr.net/npm/three@0.155.0/build/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.155.0/examples/js/controls/OrbitControls.js"></script>
@@ -144,13 +170,24 @@
         // Basic Three.js setup
         let scene, camera, renderer, controls;
         let shapes = [];
-        let selectedShape = null;
+        let selectedShapes = []; // Multi-select support
+        let selectedShape = null; // Current single selection (for backward compatibility)
         let currentOperation = null;
         let raycaster = new THREE.Raycaster();
         let mouse = new THREE.Vector2();
         let isDragging = false;
         let dragOffset = new THREE.Vector3();
         let isMobile = /Android|iPhone|iPad|iPod|mobile/i.test(navigator.userAgent);
+        
+        // Grid settings
+        let gridHelper = null;
+        let gridVisible = true;
+        let unitMode = 'cm'; // 'cm' or 'inch'
+        let gridSize = 20;
+        
+        // Snap settings
+        let snapEnabled = true;
+        let snapPrecision = 1; // mm
 
         init();
         animate();
@@ -180,9 +217,21 @@
             // Enable two-finger pan on touch devices
             controls.screenSpacePanning = true;
 
-            // Grid helper
-            const gridHelper = new THREE.GridHelper(20, 20, 0xaaaaaa, 0xeeeeee);
+            // Grid helper (made responsive to unit mode)
+            gridHelper = new THREE.GridHelper(gridSize, gridSize, 0xaaaaaa, 0xeeeeee);
             scene.add(gridHelper);
+            
+            // Floor plane for better visibility
+            const floorGeometry = new THREE.PlaneGeometry(gridSize, gridSize);
+            const floorMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0xe0e0e0, 
+                transparent: true, 
+                opacity: 0.3,
+                side: THREE.DoubleSide 
+            });
+            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            floor.rotation.x = -Math.PI / 2;
+            scene.add(floor);
 
             // Axes helper
             const axesHelper = new THREE.AxesHelper(5);
@@ -226,6 +275,15 @@
             });
             document.getElementById('export-stl').addEventListener('click', exportSTL);
             document.getElementById('clear').addEventListener('click', clearAll);
+            document.getElementById('toggle-grid').addEventListener('click', toggleGrid);
+            document.getElementById('unit-toggle').addEventListener('click', toggleUnit);
+            document.getElementById('snap-precision').addEventListener('change', (e) => {
+                snapPrecision = parseFloat(e.target.value);
+            });
+            document.getElementById('merge-shapes').addEventListener('click', mergeSelected);
+            document.getElementById('align-edge').addEventListener('click', alignEdge);
+            document.getElementById('align-center').addEventListener('click', alignCenter);
+            document.getElementById('distribute').addEventListener('click', distributeShapes);
         }
 
         function addShape(type) {
@@ -265,10 +323,25 @@
             selectShape(mesh);
         }
 
-        function selectShape(mesh) {
-            if (selectedShape) {
-                selectedShape.material.emissive.setHex(0x000000);
+        function selectShape(mesh, evt = null) {
+            // Multi-select with Ctrl/Cmd key
+            if (evt && (evt.ctrlKey || evt.metaKey)) {
+                const index = selectedShapes.indexOf(mesh);
+                if (index > -1) {
+                    selectedShapes.splice(index, 1);
+                    mesh.material.emissive.setHex(0x000000);
+                } else {
+                    selectedShapes.push(mesh);
+                    mesh.material.emissive.setHex(0x333333);
+                }
+                selectedShape = selectedShapes.length > 0 ? selectedShapes[selectedShapes.length - 1] : null;
+                updateStatus(`${selectedShapes.length} shapes selected`);
+                return;
             }
+            
+            // Single select - clear previous selections
+            selectedShapes.forEach(s => s.material.emissive.setHex(0x000000));
+            selectedShapes = [mesh];
             selectedShape = mesh;
             selectedShape.material.emissive.setHex(0x333333);
             updateStatus(`Selected: ${mesh.userData.type}`);
@@ -294,7 +367,7 @@
                     currentOperation = null;
                     document.querySelectorAll('[data-op]').forEach(b => b.classList.remove('active'));
                 } else {
-                    selectShape(clickedShape);
+                    selectShape(clickedShape, event);
                     // Start dragging selected shape on mobile
                     if (isMobile) {
                         isDragging = true;
@@ -310,7 +383,8 @@
             if (!isDragging || !selectedShape) return;
             
             const intersection = getPlaneIntersection(event);
-            selectedShape.position.copy(intersection);
+            // Apply snap to grid
+            selectedShape.position.copy(snapToGrid(intersection));
         }
 
         function onPointerUp(event) {
@@ -392,7 +466,161 @@
             shapes.forEach(shape => scene.remove(shape));
             shapes = [];
             selectedShape = null;
+            selectedShapes = [];
             updateStatus('Cleared all shapes');
+        }
+        
+        // Grid functions
+        function toggleGrid() {
+            gridVisible = !gridVisible;
+            gridHelper.visible = gridVisible;
+            updateStatus(gridVisible ? 'Grid enabled' : 'Grid disabled');
+        }
+        
+        function toggleUnit() {
+            unitMode = unitMode === 'cm' ? 'inch' : 'cm';
+            document.getElementById('unit-toggle').textContent = unitMode.toUpperCase();
+            updateStatus(`Switched to ${unitMode} mode`);
+            // Update grid scale
+            updateGridScale();
+        }
+        
+        function updateGridScale() {
+            // Convert grid size based on unit
+            const newSize = unitMode === 'inch' ? gridSize * 2.54 : gridSize;
+            // Update grid helper
+            scene.remove(gridHelper);
+            gridHelper = new THREE.GridHelper(newSize, Math.round(newSize), 0xaaaaaa, 0xeeeeee);
+            scene.add(gridHelper);
+        }
+        
+        // Snap to grid function
+        function snapToGrid(position) {
+            if (!snapEnabled) return position;
+            
+            // Convert precision based on units (precision is in mm for cm mode)
+            const precisionCm = unitMode === 'inch' ? snapPrecision * 0.03937 : snapPrecision / 10;
+            
+            return new THREE.Vector3(
+                Math.round(position.x / precisionCm) * precisionCm,
+                Math.round(position.y / precisionCm) * precisionCm,
+                Math.round(position.z / precisionCm) * precisionCm
+            );
+        }
+        
+        // Multi-shape operations
+        function mergeSelected() {
+            if (selectedShapes.length < 2) {
+                updateStatus('Select at least 2 shapes to merge');
+                return;
+            }
+            
+            const shapesToMerge = [...selectedShapes];
+            let baseShape = shapesToMerge.shift();
+            
+            for (const shape of shapesToMerge) {
+                try {
+                    const geomA = baseShape.geometry.clone().applyMatrix4(baseShape.matrixWorld);
+                    const geomB = shape.geometry.clone().applyMatrix4(shape.matrixWorld);
+                    
+                    const meshA = new THREE.Mesh(geomA);
+                    const meshB = new THREE.Mesh(geomB);
+                    
+                    const resultGeometry = CSG.union(meshA, meshB);
+                    
+                    if (resultGeometry) {
+                        const resultMesh = new THREE.Mesh(resultGeometry, baseShape.material.clone());
+                        resultMesh.position.copy(baseShape.position);
+                        
+                        scene.remove(baseShape);
+                        scene.remove(shape);
+                        scene.add(resultMesh);
+                        
+                        shapes = shapes.filter(s => s !== baseShape && s !== shape);
+                        shapes.push(resultMesh);
+                        baseShape = resultMesh;
+                    }
+                } catch (e) {
+                    console.error('Merge failed:', e);
+                }
+            }
+            
+            selectedShapes = [baseShape];
+            selectShape(baseShape);
+            updateStatus('Shapes merged');
+        }
+        
+        function alignEdge() {
+            if (selectedShapes.length < 2) {
+                updateStatus('Select at least 2 shapes to align');
+                return;
+            }
+            
+            // Align to the edge (min X) of the first selected shape
+            const baseShape = selectedShapes[0];
+            const baseBox = new THREE.Box3().setFromObject(baseShape);
+            
+            for (let i = 1; i < selectedShapes.length; i++) {
+                const shape = selectedShapes[i];
+                const shapeBox = new THREE.Box3().setFromObject(shape);
+                
+                // Calculate offset to align edges
+                const offset = baseBox.min.x - shapeBox.min.x;
+                shape.position.x += offset;
+                
+                // Apply snap to grid
+                shape.position.copy(snapToGrid(shape.position));
+            }
+            
+            updateStatus('Shapes aligned to edge');
+        }
+        
+        function alignCenter() {
+            if (selectedShapes.length < 2) {
+                updateStatus('Select at least 2 shapes to align');
+                return;
+            }
+            
+            // Calculate center of all selected shapes
+            let centerX = 0, centerY = 0, centerZ = 0;
+            selectedShapes.forEach(shape => {
+                centerX += shape.position.x;
+                centerY += shape.position.y;
+                centerZ += shape.position.z;
+            });
+            centerX /= selectedShapes.length;
+            centerY /= selectedShapes.length;
+            centerZ /= selectedShapes.length;
+            
+            // Align all shapes to this center
+            selectedShapes.forEach(shape => {
+                shape.position.set(centerX, centerY, centerZ);
+                shape.position.copy(snapToGrid(shape.position));
+            });
+            
+            updateStatus('Shapes aligned to center');
+        }
+        
+        function distributeShapes() {
+            if (selectedShapes.length < 3) {
+                updateStatus('Select at least 3 shapes to distribute');
+                return;
+            }
+            
+            // Sort shapes by X position
+            const sorted = [...selectedShapes].sort((a, b) => a.position.x - b.position.x);
+            
+            const first = sorted[0];
+            const last = sorted[sorted.length - 1];
+            const totalDistance = last.position.x - first.position.x;
+            const spacing = totalDistance / (sorted.length - 1);
+            
+            sorted.forEach((shape, index) => {
+                shape.position.x = first.position.x + spacing * index;
+                shape.position.copy(snapToGrid(shape.position));
+            });
+            
+            updateStatus('Shapes distributed evenly');
         }
 
         function updateStatus(message) {
