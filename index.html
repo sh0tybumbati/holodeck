@@ -54,6 +54,8 @@
             cursor: pointer;
             font-size: 12px;
             white-space: nowrap;
+            touch-action: manipulation;
+            user-select: none;
         }
         .tool-btn:hover {
             background: #e0e0e0;
@@ -136,7 +138,7 @@
         <div class="toolbar-group">
             <span class="toolbar-label">Grid:</span>
             <div class="tool-btn" id="toggle-grid">Toggle</div>
-            <div class="tool-btn" id="unit-toggle">cm</div>
+            <div class="tool-btn" id="unit-toggle">cm / inch</div>
         </div>
         
         <div class="toolbar-group">
@@ -162,10 +164,10 @@
     <div id="canvas-container"></div>
     <div id="status">Click shapes to select, drag to move. Ctrl+Click to multi-select. Use mouse wheel to zoom, middle-drag to pan.</div>
 
-    <script src="https://cdn.jsdelivr.net/npm/three@0.155.0/build/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.155.0/examples/js/controls/OrbitControls.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.155.0/examples/js/exporters/STLExporter.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three-csg@1.0.0/dist/three-csg.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.140.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.140.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.140.0/examples/js/exporters/STLExporter.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three-csg@1.0.0"></script>
     <script>
         // Basic Three.js setup
         let scene, camera, renderer, controls;
@@ -269,21 +271,38 @@
         function setupToolbar() {
             document.querySelectorAll('[data-shape]').forEach(btn => {
                 btn.addEventListener('click', () => addShape(btn.dataset.shape));
+                // Ensure touch events work properly
+                btn.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    addShape(btn.dataset.shape);
+                });
             });
             document.querySelectorAll('[data-op]').forEach(btn => {
                 btn.addEventListener('click', (e) => setOperation(btn.dataset.op, e));
+                btn.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    setOperation(btn.dataset.op, e);
+                });
             });
-            document.getElementById('export-stl').addEventListener('click', exportSTL);
-            document.getElementById('clear').addEventListener('click', clearAll);
-            document.getElementById('toggle-grid').addEventListener('click', toggleGrid);
-            document.getElementById('unit-toggle').addEventListener('click', toggleUnit);
-            document.getElementById('snap-precision').addEventListener('change', (e) => {
-                snapPrecision = parseFloat(e.target.value);
-            });
-            document.getElementById('merge-shapes').addEventListener('click', mergeSelected);
-            document.getElementById('align-edge').addEventListener('click', alignEdge);
-            document.getElementById('align-center').addEventListener('click', alignCenter);
-            document.getElementById('distribute').addEventListener('click', distributeShapes);
+            // Helper to add both click and touchend to buttons
+            const addTouch = (id, handler) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.addEventListener('click', handler);
+                    el.addEventListener('touchend', (e) => {
+                        e.preventDefault();
+                        handler(e);
+                    });
+                }
+            };
+            addTouch('export-stl', exportSTL);
+            addTouch('clear', clearAll);
+            addTouch('toggle-grid', toggleGrid);
+            addTouch('unit-toggle', toggleUnit);
+            addTouch('merge-shapes', mergeSelected);
+            addTouch('align-edge', alignEdge);
+            addTouch('align-center', alignCenter);
+            addTouch('distribute', distributeShapes);
         }
 
         function addShape(type) {
@@ -348,6 +367,11 @@
         }
 
         function onPointerDown(event) {
+            // Don't process pointer events if we're interacting with toolbar
+            if (event.target.closest('#toolbar')) {
+                return;
+            }
+            
             // Prevent default touch behaviors
             if (event.pointerType === 'touch') {
                 event.preventDefault();
@@ -415,23 +439,27 @@
 
         function performBooleanOperation(shapeA, shapeB) {
             try {
-                // Use CSG for boolean operations
+                // Use ThreeBSP for boolean operations
                 const geomA = shapeA.geometry.clone().applyMatrix4(shapeA.matrixWorld);
                 const geomB = shapeB.geometry.clone().applyMatrix4(shapeB.matrixWorld);
                 
                 const meshA = new THREE.Mesh(geomA);
                 const meshB = new THREE.Mesh(geomB);
                 
-                let resultGeometry;
+                let resultBSP;
+                const bspA = new ThreeBSP(meshA);
+                const bspB = new ThreeBSP(meshB);
+                
                 if (currentOperation === 'subtract') {
                     // A - B
-                    resultGeometry = CSG.subtract(meshA, meshB);
+                    resultBSP = bspA.subtract(bspB);
                 } else if (currentOperation === 'union') {
                     // A + B
-                    resultGeometry = CSG.union(meshA, meshB);
+                    resultBSP = bspA.union(bspB);
                 }
                 
-                if (resultGeometry) {
+                if (resultBSP) {
+                    const resultGeometry = resultBSP.toGeometry();
                     const resultMesh = new THREE.Mesh(resultGeometry, shapeA.material.clone());
                     resultMesh.position.copy(shapeA.position);
                     
@@ -479,8 +507,8 @@
         
         function toggleUnit() {
             unitMode = unitMode === 'cm' ? 'inch' : 'cm';
-            document.getElementById('unit-toggle').textContent = unitMode.toUpperCase();
-            updateStatus(`Switched to ${unitMode} mode`);
+            document.getElementById('unit-toggle').textContent = 'cm / inch';
+            updateStatus(`Unit: ${unitMode.toUpperCase()}`);
             // Update grid scale
             updateGridScale();
         }
@@ -526,9 +554,12 @@
                     const meshA = new THREE.Mesh(geomA);
                     const meshB = new THREE.Mesh(geomB);
                     
-                    const resultGeometry = CSG.union(meshA, meshB);
+                    const bspA = new ThreeBSP(meshA);
+                    const bspB = new ThreeBSP(meshB);
+                    const resultBSP = bspA.union(bspB);
                     
-                    if (resultGeometry) {
+                    if (resultBSP) {
+                        const resultGeometry = resultBSP.toGeometry();
                         const resultMesh = new THREE.Mesh(resultGeometry, baseShape.material.clone());
                         resultMesh.position.copy(baseShape.position);
                         
