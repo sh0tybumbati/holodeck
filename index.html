@@ -64,6 +64,50 @@
             border-radius: 4px;
             font-size: 12px;
         }
+        /* Mobile styles */
+        @media (max-width: 768px) {
+            #toolbar {
+                top: 5px;
+                left: 5px;
+                right: 5px;
+                max-width: none;
+                padding: 8px;
+            }
+            .tool-section {
+                display: inline-block;
+                margin: 0 5px 5px 0;
+                vertical-align: top;
+            }
+            .tool-section h3 {
+                font-size: 10px;
+                margin-bottom: 2px;
+            }
+            .tool-btn {
+                padding: 10px 8px;
+                margin: 1px;
+                font-size: 11px;
+                min-width: 60px;
+                text-align: center;
+            }
+            #status {
+                bottom: 5px;
+                left: 5px;
+                right: 5px;
+                font-size: 11px;
+                padding: 6px 10px;
+            }
+            /* Touch-friendly mode indicator */
+            .touch-mode .tool-section {
+                margin: 0 3px 3px 0;
+            }
+        }
+        /* Larger touch targets for mobile */
+        @media (hover: none) and (pointer: coarse) {
+            .tool-btn {
+                padding: 12px 10px;
+                font-size: 12px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -104,6 +148,9 @@
         let currentOperation = null;
         let raycaster = new THREE.Raycaster();
         let mouse = new THREE.Vector2();
+        let isDragging = false;
+        let dragOffset = new THREE.Vector3();
+        let isMobile = /Android|iPhone|iPad|iPod|mobile/i.test(navigator.userAgent);
 
         init();
         animate();
@@ -122,9 +169,16 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
             document.getElementById('canvas-container').appendChild(renderer.domElement);
 
-            // Controls
+            // Controls - enhanced for touch
             controls = new THREE.OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
+            // Touch-friendly settings
+            controls.enablePan = true;
+            controls.panSpeed = 0.8;
+            controls.rotateSpeed = 0.5;
+            controls.zoomSpeed = 0.8;
+            // Enable two-finger pan on touch devices
+            controls.screenSpacePanning = true;
 
             // Grid helper
             const gridHelper = new THREE.GridHelper(20, 20, 0xaaaaaa, 0xeeeeee);
@@ -143,8 +197,24 @@
 
             // Event listeners
             window.addEventListener('resize', onWindowResize);
-            renderer.domElement.addEventListener('pointerdown', onPointerDown);
+            const canvas = renderer.domElement;
+            
+            // Pointer events for both mouse and touch
+            canvas.addEventListener('pointerdown', onPointerDown);
+            canvas.addEventListener('pointermove', onPointerMove);
+            canvas.addEventListener('pointerup', onPointerUp);
+            canvas.addEventListener('pointerleave', onPointerUp);
+            
+            // Prevent context menu on long press (mobile)
+            canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+            
             setupToolbar();
+            
+            // Add mobile class to body if on touch device
+            if (isMobile) {
+                document.body.classList.add('touch-mode');
+                updateStatus('Mobile mode: Drag to rotate view, pinch to zoom, two-finger drag to pan. Tap shapes to select.');
+            }
         }
 
         function setupToolbar() {
@@ -152,7 +222,7 @@
                 btn.addEventListener('click', () => addShape(btn.dataset.shape));
             });
             document.querySelectorAll('[data-op]').forEach(btn => {
-                btn.addEventListener('click', () => setOperation(btn.dataset.op));
+                btn.addEventListener('click', (e) => setOperation(btn.dataset.op, e));
             });
             document.getElementById('export-stl').addEventListener('click', exportSTL);
             document.getElementById('clear').addEventListener('click', clearAll);
@@ -205,6 +275,11 @@
         }
 
         function onPointerDown(event) {
+            // Prevent default touch behaviors
+            if (event.pointerType === 'touch') {
+                event.preventDefault();
+            }
+            
             mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
             mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
@@ -220,15 +295,48 @@
                     document.querySelectorAll('[data-op]').forEach(b => b.classList.remove('active'));
                 } else {
                     selectShape(clickedShape);
+                    // Start dragging selected shape on mobile
+                    if (isMobile) {
+                        isDragging = true;
+                        controls.enabled = false; // Disable orbit controls while dragging
+                        // Store the shape's original position
+                        dragOffset.copy(clickedShape.position);
+                    }
                 }
             }
         }
 
-        function setOperation(op) {
+        function onPointerMove(event) {
+            if (!isDragging || !selectedShape) return;
+            
+            const intersection = getPlaneIntersection(event);
+            selectedShape.position.copy(intersection);
+        }
+
+        function onPointerUp(event) {
+            if (isDragging) {
+                isDragging = false;
+                controls.enabled = true; // Re-enable orbit controls
+            }
+        }
+
+        function getPlaneIntersection(event) {
+            const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0));
+            const intersection = new THREE.Vector3();
+            const mousePos = new THREE.Vector2(
+                (event.clientX / window.innerWidth) * 2 - 1,
+                -(event.clientY / window.innerHeight) * 2 + 1
+            );
+            raycaster.setFromCamera(mousePos, camera);
+            raycaster.ray.intersectPlane(plane, intersection);
+            return intersection;
+        }
+
+        function setOperation(op, event) {
             currentOperation = op;
             document.querySelectorAll('[data-op]').forEach(b => b.classList.remove('active'));
             event.target.classList.add('active');
-            updateStatus(`Operation: ${op}. Click two shapes to perform.`);
+            updateStatus(`Operation: ${op}. Tap two shapes to perform.`);
         }
 
         function performBooleanOperation(shapeA, shapeB) {
