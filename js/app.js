@@ -441,7 +441,7 @@ function drawBoxDimensions(box, isEditable) {
     box.getSize(size);
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
     
-    const colorTheme = document.body.getAttribute('data-color-theme') || 'blueprint';
+    const colorTheme = document.body.getAttribute('data-color-theme') || 'holodeck';
     const accentColor = colorTheme === 'holodeck' ? 0xecc94b : 0x0055ff;
     
     const mat = new THREE.LineBasicMaterial({ 
@@ -615,7 +615,7 @@ function initViewCube() {
 }
 
 function getCubeMaterials() {
-    const colorTheme = document.body.getAttribute('data-color-theme') || 'blueprint';
+    const colorTheme = document.body.getAttribute('data-color-theme') || 'holodeck';
     const isDark = document.body.getAttribute('data-brightness') === 'dark';
     
     let bg = isDark ? '#0a3d91' : '#ffffff';
@@ -871,7 +871,7 @@ function setupPropertyInputs() {
 
 function updateSceneBackground() {
     scene.background = null; 
-    const colorTheme = document.body.getAttribute('data-color-theme') || 'blueprint';
+    const colorTheme = document.body.getAttribute('data-color-theme') || 'holodeck';
     const isDark = document.body.getAttribute('data-brightness') === 'dark';
     if (gridHelper) {
         let color = isDark ? 0xffffff : 0x0a3d91;
@@ -937,7 +937,7 @@ function setupThemeToggle() {
     const select = document.getElementById('color-theme-select');
     const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     const savedTheme = localStorage.getItem('theme') || (prefersDark ? 'dark' : 'light');
-    const savedColorTheme = localStorage.getItem('color-theme') || 'blueprint';
+    const savedColorTheme = localStorage.getItem('color-theme') || 'holodeck';
     
     document.body.setAttribute('data-brightness', savedTheme);
     btn.querySelector('i').className = savedTheme === 'dark' ? 'fas fa-sun' : 'fas fa-moon';
