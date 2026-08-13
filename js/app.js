@@ -1563,6 +1563,16 @@ function createMotorGeometry(nema) {
     shaftGeom.translate(0, 0, shaftLength / 2);
     geometries.push(shaftGeom);
 
+    // Normalize geometries for merging (prevent index/uv mismatch errors)
+    for (let i = 0; i < geometries.length; i++) {
+        if (geometries[i].index) {
+            geometries[i] = geometries[i].toNonIndexed();
+        }
+        geometries[i].deleteAttribute('uv');
+        geometries[i].deleteAttribute('uv2');
+        geometries[i].computeVertexNormals();
+    }
+
     // Merge everything
     const mergedGeometry = THREE.BufferGeometryUtils.mergeBufferGeometries(geometries, false);
     return mergedGeometry;
@@ -1629,6 +1639,16 @@ function createScrewGeometry(size, headType) {
         // Set screw has no real head, just a hex hole inside the thread itself. 
         // We can just use the thread we already made, but let's hollow out the top.
         // For simplicity, we just leave the cylinder as is.
+    }
+
+    // Normalize geometries for merging (prevent index/uv mismatch errors)
+    for (let i = 0; i < geometries.length; i++) {
+        if (geometries[i].index) {
+            geometries[i] = geometries[i].toNonIndexed();
+        }
+        geometries[i].deleteAttribute('uv');
+        geometries[i].deleteAttribute('uv2');
+        geometries[i].computeVertexNormals();
     }
 
     const mergedGeometry = THREE.BufferGeometryUtils.mergeBufferGeometries(geometries, false);
