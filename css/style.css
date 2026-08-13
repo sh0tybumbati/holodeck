@@ -161,7 +161,18 @@ input, textarea {
     padding: 12px 16px;
 }
 
+#top-left-toolbar { top: 16px; left: 16px; }
 #top-toolbar { top: 16px; left: 50%; transform: translateX(-50%); }
+#left-sidebar { 
+    top: 80px; 
+    left: 16px; 
+    flex-direction: column; 
+    padding: 12px;
+}
+#left-sidebar .toolbar-group { flex-direction: column; }
+
+.separator { width: 1px; height: 24px; background: var(--border-color); margin: 0 4px; }
+#left-sidebar .separator { width: 24px; height: 1px; margin: 4px 0; }
 
 .toolbar-group { display: flex; align-items: center; gap: 8px; }
 
@@ -212,17 +223,32 @@ input, textarea {
     position: absolute; top: 16px; right: 16px; z-index: 100; display: flex; gap: 8px; align-items: center;
 }
 
-/* Properties Panel */
-#properties-panel {
+/* Right Sidebar */
+#right-sidebar {
     position: absolute;
     top: 60px;
     right: 20px;
     width: 250px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    z-index: 100;
+    max-height: calc(100vh - 100px);
+    overflow-y: auto;
+    /* hide scrollbar for clean look */
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+#right-sidebar::-webkit-scrollbar {
+    display: none;
+}
+
+/* Properties Panel */
+#properties-panel {
     padding: 16px;
     display: none;
     flex-direction: column;
     gap: 12px;
-    z-index: 100;
 }
 #properties-panel h3 {
     margin: 0 0 10px 0;
@@ -410,5 +436,44 @@ input, textarea {
     .tool-btn { padding: 6px 10px; font-size: 11px; }
     .icon-btn { width: 32px; height: 32px; padding: 6px; }
     #status-bar { width: 90%; text-align: center; bottom: 8px; padding: 8px 12px; font-size: 11px; }
-    #properties-panel { top: auto; bottom: 60px; right: 8px; width: 200px; }
+    #right-sidebar { top: auto; bottom: 60px; right: 8px; width: 200px; }
+}
+
+/* Dashboard Project Card */
+.project-card {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    padding: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    color: white;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.project-card:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: var(--primary-color);
+    transform: translateY(-2px);
+}
+.project-card img {
+    width: 100%;
+    height: 150px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #000;
+}
+.project-card h3 {
+    margin: 0;
+    font-size: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.project-card .meta {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.7);
+    display: flex;
+    justify-content: space-between;
 }

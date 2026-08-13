@@ -77,9 +77,8 @@
         </button>
     </div>
 
-    <!-- Top Toolbar (Global Actions) -->
-    <div id="top-toolbar" class="toolbar glass-panel">
-        <!-- System & File -->
+    <!-- Top Left Toolbar (System, File, History) -->
+    <div id="top-left-toolbar" class="toolbar glass-panel">
         <div class="toolbar-group">
             <button class="tool-btn" id="btn-dashboard" title="Project Dashboard">
                 <i class="fas fa-layer-group"></i>
@@ -94,10 +93,7 @@
                 <i class="fas fa-file-export"></i>
             </button>
         </div>
-        
         <div class="separator"></div>
-        
-        <!-- History -->
         <div class="toolbar-group">
             <button class="tool-btn" id="btn-undo" title="Undo (Ctrl+Z)">
                 <i class="fas fa-undo"></i>
@@ -106,12 +102,11 @@
                 <i class="fas fa-redo"></i>
             </button>
         </div>
-        
-        <div class="separator"></div>
-        
-        <div class="separator"></div>
-        
-        <!-- Add Shapes -->
+        <input type="file" id="file-load" style="display: none;" accept=".holo,.hldk">
+    </div>
+
+    <!-- Left Sidebar (Creation Tools) -->
+    <div id="left-sidebar" class="toolbar glass-panel">
         <div class="toolbar-group">
             <button class="tool-btn" data-shape="cube" title="Add Cube">
                 <i class="fas fa-cube"></i>
@@ -126,10 +121,7 @@
                 <i class="fas fa-caret-up"></i>
             </button>
         </div>
-
         <div class="separator"></div>
-
-        <!-- Hardware Library -->
         <div class="toolbar-group">
             <button class="tool-btn" id="add-extrusion" title="Add Extrusion">
                 <i class="fas fa-bars"></i>
@@ -144,10 +136,10 @@
                 <i class="fas fa-plug"></i>
             </button>
         </div>
-        
-        <div class="separator"></div>
-        
-        <!-- Transforms -->
+    </div>
+
+    <!-- Top Toolbar (Transforms & Operations) -->
+    <div id="top-toolbar" class="toolbar glass-panel">
         <div class="toolbar-group">
             <button class="tool-btn active" data-transform="translate" title="Move">
                 <i class="fas fa-arrows-alt"></i>
@@ -159,10 +151,7 @@
                 <i class="fas fa-compress-arrows-alt"></i>
             </button>
         </div>
-
         <div class="separator"></div>
-
-        <!-- Operations -->
         <div class="toolbar-group">
             <button class="tool-btn" id="align-mode" title="Align Selected">
                 <i class="fas fa-align-center"></i>
@@ -180,7 +169,6 @@
                 <i class="fas fa-trash-alt"></i>
             </button>
         </div>
-        <input type="file" id="file-load" style="display: none;" accept=".holo,.hldk">
     </div>
     
     <!-- Right Sidebar (Properties, BOM, Lifecycle) -->
