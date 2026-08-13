@@ -1050,6 +1050,27 @@ function setupThemeToggle() {
         document.body.setAttribute('data-color-theme', e.target.value); localStorage.setItem('color-theme', e.target.value);
         updateSceneBackground();
     });
+
+    // Setup BOM and Lifecycle panel toggles
+    const btnBom = document.getElementById('toggle-bom-btn');
+    const panelBom = document.getElementById('bom-panel');
+    if (btnBom && panelBom) {
+        btnBom.addEventListener('click', () => {
+            const isVisible = panelBom.style.display !== 'none';
+            panelBom.style.display = isVisible ? 'none' : 'flex';
+            btnBom.classList.toggle('active', !isVisible);
+        });
+    }
+
+    const btnLifecycle = document.getElementById('toggle-lifecycle-btn');
+    const panelLifecycle = document.getElementById('lifecycle-panel');
+    if (btnLifecycle && panelLifecycle) {
+        btnLifecycle.addEventListener('click', () => {
+            const isVisible = panelLifecycle.style.display !== 'none';
+            panelLifecycle.style.display = isVisible ? 'none' : 'flex';
+            btnLifecycle.classList.toggle('active', !isVisible);
+        });
+    }
 }
 
 function setupToolbar() {
