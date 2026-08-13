@@ -14,6 +14,21 @@
     <link rel="stylesheet" href="css/style.css?v=3">
 </head>
 <body data-color-theme="holodeck" data-brightness="dark">
+    <!-- Local Project Dashboard Overlay -->
+    <div id="dashboard-overlay" class="glass-panel" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 10000; background: rgba(0,0,0,0.8); overflow-y: auto; padding: 40px; flex-direction: column;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h1 style="color: white; margin: 0; font-family: 'Inter', sans-serif;"><i class="fas fa-layer-group"></i> Local Projects Dashboard</h1>
+            <button id="close-dashboard" class="tool-btn" style="padding: 10px 20px; font-size: 16px;"><i class="fas fa-times"></i> Close</button>
+        </div>
+        <div style="margin-bottom: 20px;">
+            <button id="btn-select-dir" class="tool-btn" style="padding: 10px 20px; font-size: 16px; background: var(--primary-color); color: white;"><i class="fas fa-folder-open"></i> Open Projects Folder</button>
+            <span id="dashboard-status" style="color: white; margin-left: 15px;">No folder selected.</span>
+        </div>
+        <div id="dashboard-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px;">
+            <!-- Project Cards will populate here -->
+        </div>
+    </div>
+
     <!-- ViewCube & Projection -->
     <div id="viewcube-wrapper" class="glass-panel">
         <div id="viewcube-container"></div>
@@ -60,6 +75,9 @@
     <div id="top-toolbar" class="toolbar glass-panel">
         <!-- System & File -->
         <div class="toolbar-group">
+            <button class="tool-btn" id="btn-dashboard" title="Project Dashboard">
+                <i class="fas fa-layer-group"></i>
+            </button>
             <button class="tool-btn" id="btn-load" title="Load Project">
                 <i class="fas fa-folder-open"></i>
             </button>
@@ -85,6 +103,8 @@
         
         <div class="separator"></div>
         
+        <div class="separator"></div>
+        
         <!-- Add Shapes -->
         <div class="toolbar-group">
             <button class="tool-btn" data-shape="cube" title="Add Cube">
@@ -98,6 +118,24 @@
             </button>
             <button class="tool-btn" data-shape="cone" title="Add Cone">
                 <i class="fas fa-caret-up"></i>
+            </button>
+        </div>
+
+        <div class="separator"></div>
+
+        <!-- Hardware Library -->
+        <div class="toolbar-group">
+            <button class="tool-btn" id="add-extrusion" title="Add Extrusion">
+                <i class="fas fa-bars"></i>
+            </button>
+            <button class="tool-btn" id="add-motor" title="Add Stepper Motor">
+                <i class="fas fa-cogs"></i>
+            </button>
+            <button class="tool-btn" id="add-screw" title="Add Screw">
+                <i class="fas fa-screwdriver"></i>
+            </button>
+            <button class="tool-btn" id="wire-tool" title="Wire Tool">
+                <i class="fas fa-plug"></i>
             </button>
         </div>
         
@@ -136,45 +174,133 @@
                 <i class="fas fa-trash-alt"></i>
             </button>
         </div>
-        <input type="file" id="file-load" style="display: none;" accept=".hldk">
+        <input type="file" id="file-load" style="display: none;" accept=".holo,.hldk">
     </div>
     
-    <!-- Properties Panel -->
-    <div id="properties-panel" class="glass-panel">
-        <h3>Properties</h3>
-        <div class="prop-row" id="prop-type-row" style="margin-bottom: 12px; justify-content: center;">
-            <div class="segmented-control">
-                <input type="radio" id="type-solid" name="obj-type" value="solid" checked>
-                <label for="type-solid">Solid</label>
-                <input type="radio" id="type-hole" name="obj-type" value="hole">
-                <label for="type-hole">Hole</label>
+    <!-- Right Sidebar (Properties, BOM, Lifecycle) -->
+    <div id="right-sidebar">
+        <!-- Properties Panel -->
+        <div id="properties-panel" class="glass-panel">
+            <h3>Properties</h3>
+            <!-- Specialized Hardware Properties -->
+            <div id="hardware-properties" style="display: none; flex-direction: column; gap: 8px; margin-bottom: 12px; padding: 8px; background: rgba(0,0,0,0.1); border-radius: 6px;">
+                <div class="prop-row hw-extrusion">
+                    <label>Profile:</label>
+                    <select id="hw-extrusion-profile">
+                        <option value="2020">2020</option>
+                        <option value="2040">2040</option>
+                        <option value="3030">3030</option>
+                        <option value="4040">4040</option>
+                    </select>
+                </div>
+                <div class="prop-row hw-extrusion">
+                    <label>Slot:</label>
+                    <select id="hw-extrusion-slot">
+                        <option value="v-slot">V-Slot</option>
+                        <option value="t-slot">T-Slot</option>
+                    </select>
+                </div>
+                <div class="prop-row hw-motor">
+                    <label>NEMA:</label>
+                    <select id="hw-motor-type">
+                        <option value="14">NEMA 14</option>
+                        <option value="17" selected>NEMA 17</option>
+                        <option value="23">NEMA 23</option>
+                        <option value="34">NEMA 34</option>
+                    </select>
+                </div>
+                <div class="prop-row hw-screw">
+                    <label>Size:</label>
+                    <select id="hw-screw-size">
+                        <option value="M2">M2</option>
+                        <option value="M3" selected>M3</option>
+                        <option value="M4">M4</option>
+                        <option value="M5">M5</option>
+                    </select>
+                </div>
+                <div class="prop-row hw-screw">
+                    <label>Head:</label>
+                    <select id="hw-screw-head">
+                        <option value="socket">Socket</option>
+                        <option value="button">Button</option>
+                        <option value="flat">Flat</option>
+                        <option value="set">Set/Grub</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="prop-row" id="prop-type-row" style="margin-bottom: 12px; justify-content: center;">
+                <div class="segmented-control">
+                    <input type="radio" id="type-solid" name="obj-type" value="solid" checked>
+                    <label for="type-solid">Solid</label>
+                    <input type="radio" id="type-hole" name="obj-type" value="hole">
+                    <label for="type-hole">Hole</label>
+                </div>
+            </div>
+            <div class="prop-row" id="prop-part-row" style="display: none;">
+                <select id="obj-part">
+                    <option value="root">Overall Shape</option>
+                </select>
+            </div>
+            <div id="preview-container"></div>
+            <div class="prop-row">
+                <label>W (X):</label>
+                <input type="text" id="obj-w" placeholder="Width">
+            </div>
+            <div class="prop-row">
+                <label>H (Y):</label>
+                <input type="text" id="obj-h" placeholder="Height">
+            </div>
+            <div class="prop-row">
+                <label>L (Z):</label>
+                <input type="text" id="obj-l" placeholder="Length">
+            </div>
+            <div class="prop-row" style="justify-content: flex-start; gap: 12px;">
+                <input type="color" id="obj-color" value="#ffffff" style="cursor: pointer;">
+                <label for="obj-color" style="cursor: pointer;">Color</label>
+            </div>
+            <div class="prop-row">
+                <label for="obj-transparent">Transparent:</label>
+                <input type="checkbox" id="obj-transparent" checked>
             </div>
         </div>
-        <div class="prop-row" id="prop-part-row" style="display: none;">
-            <select id="obj-part">
-                <option value="root">Overall Shape</option>
-            </select>
+
+        <!-- BOM Panel -->
+        <div id="bom-panel" class="glass-panel" style="display: flex; flex-direction: column; gap: 12px; margin-top: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin:0;">Bill of Materials</h3>
+                <span id="bom-total" style="font-weight:bold; color:var(--accent);">$0.00</span>
+            </div>
+            <div id="bom-list" style="display:flex; flex-direction:column; gap:4px; max-height:200px; overflow-y:auto; font-size:12px;">
+                <!-- BOM items go here -->
+            </div>
+            <button id="add-invisible-btn" class="tool-btn" style="width:100%;"><i class="fas fa-plus"></i> Add Custom Item</button>
         </div>
-        <div id="preview-container"></div>
-        <div class="prop-row">
-            <label>W (X):</label>
-            <input type="text" id="obj-w" placeholder="Width">
-        </div>
-        <div class="prop-row">
-            <label>H (Y):</label>
-            <input type="text" id="obj-h" placeholder="Height">
-        </div>
-        <div class="prop-row">
-            <label>L (Z):</label>
-            <input type="text" id="obj-l" placeholder="Length">
-        </div>
-        <div class="prop-row" style="justify-content: flex-start; gap: 12px;">
-            <input type="color" id="obj-color" value="#ffffff" style="cursor: pointer;">
-            <label for="obj-color" style="cursor: pointer;">Color</label>
-        </div>
-        <div class="prop-row">
-            <label for="obj-transparent">Transparent:</label>
-            <input type="checkbox" id="obj-transparent" checked>
+
+        <!-- Lifecycle Panel -->
+        <div id="lifecycle-panel" class="glass-panel" style="display: flex; flex-direction: column; gap: 12px; margin-top: 16px;">
+            <h3 style="margin:0;">Product Lifecycle</h3>
+            <div class="prop-row">
+                <label>Status:</label>
+                <select id="lc-status">
+                    <option value="Draft">Draft</option>
+                    <option value="Active">Active</option>
+                    <option value="Discontinued">Discontinued</option>
+                    <option value="Archived">Archived</option>
+                </select>
+            </div>
+            <div class="prop-row">
+                <label>Category:</label>
+                <input type="text" id="lc-category" placeholder="e.g. Drones">
+            </div>
+            <div class="prop-row">
+                <label>Product Line:</label>
+                <input type="text" id="lc-line" placeholder="e.g. Quadcopter">
+            </div>
+            <div class="prop-row">
+                <label>Version:</label>
+                <input type="text" id="lc-version" placeholder="e.g. v1.0">
+            </div>
         </div>
     </div>
 
@@ -184,7 +310,7 @@
         <div id="variables-list">
             <!-- variables will be added here -->
         </div>
-        <button id="add-var-btn"><i class="fas fa-plus"></i> New Variable</button>
+        <button id="add-var-btn" class="tool-btn" style="width:100%;"><i class="fas fa-plus"></i> New Variable</button>
     </div>
 
     <!-- Canvas -->
@@ -211,6 +337,7 @@
     <script src="https://cdn.jsdelivr.net/npm/three@0.140.0/examples/js/shaders/CopyShader.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.140.0/examples/js/renderers/CSS2DRenderer.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
-    <script type="module" src="js/app.js?v=3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.140.0/examples/js/utils/BufferGeometryUtils.js"></script>
+    <script type="module" src="js/app.js?v=4"></script>
 </body>
 </html>

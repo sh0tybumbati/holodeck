@@ -61,6 +61,90 @@ let variableCounter = 1;
 
 let dragStartScale = new THREE.Vector3();
 
+// Wire Routing State
+let isWiringMode = false;
+let wirePoints = [];
+let wirePreviewLine = null;
+let wirePreviewSphere = null;
+
+// BOM state
+let bomItems = [];
+function renderBOM() {
+    const list = document.getElementById('bom-list');
+    if (!list) return;
+    list.innerHTML = '';
+    let total = 0;
+    bomItems.forEach((item, index) => {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.justifyContent = 'space-between';
+        row.style.alignItems = 'center';
+        row.style.padding = '4px';
+        row.style.borderBottom = '1px solid rgba(0,0,0,0.1)';
+        
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.value = item.name || 'Item';
+        nameInput.style.width = '100px';
+        nameInput.style.background = 'transparent';
+        nameInput.style.border = 'none';
+        nameInput.style.color = 'inherit';
+        nameInput.addEventListener('change', (e) => {
+            item.name = e.target.value;
+            historyManager.saveState();
+        });
+
+        const priceInput = document.createElement('input');
+        priceInput.type = 'number';
+        priceInput.value = item.price || 0;
+        priceInput.step = '0.01';
+        priceInput.style.width = '50px';
+        priceInput.style.background = 'transparent';
+        priceInput.style.border = 'none';
+        priceInput.style.color = 'inherit';
+        priceInput.addEventListener('change', (e) => {
+            item.price = parseFloat(e.target.value) || 0;
+            renderBOM();
+            historyManager.saveState();
+        });
+
+        const qtyInput = document.createElement('input');
+        qtyInput.type = 'number';
+        qtyInput.value = item.quantity || 1;
+        qtyInput.style.width = '40px';
+        qtyInput.style.background = 'transparent';
+        qtyInput.style.border = 'none';
+        qtyInput.style.color = 'inherit';
+        qtyInput.addEventListener('change', (e) => {
+            item.quantity = parseInt(e.target.value) || 1;
+            renderBOM();
+            historyManager.saveState();
+        });
+        
+        const delBtn = document.createElement('button');
+        delBtn.innerHTML = '<i class="fas fa-trash"></i>';
+        delBtn.style.background = 'none';
+        delBtn.style.border = 'none';
+        delBtn.style.cursor = 'pointer';
+        delBtn.style.color = 'inherit';
+        delBtn.addEventListener('click', () => {
+            bomItems.splice(index, 1);
+            renderBOM();
+            historyManager.saveState();
+        });
+
+        row.appendChild(nameInput);
+        row.appendChild(qtyInput);
+        row.appendChild(priceInput);
+        row.appendChild(delBtn);
+        list.appendChild(row);
+
+        total += (item.price || 0) * (item.quantity || 1);
+    });
+    const totalEl = document.getElementById('bom-total');
+    if (totalEl) totalEl.innerText = `$${total.toFixed(2)}`;
+}
+
 
 function init() {
     // Scene
@@ -200,6 +284,19 @@ function init() {
     setupToolbar();
     populateSnapOptions();
     
+    // Lifecycle events to trigger save state
+    ['lc-status', 'lc-category', 'lc-line', 'lc-version'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', () => historyManager.saveState());
+    });
+    
+    const invisibleBtn = document.getElementById('add-invisible-btn');
+    if (invisibleBtn) invisibleBtn.addEventListener('click', () => {
+        bomItems.push({ id: THREE.MathUtils.generateUUID(), name: 'Custom Item', price: 0.00, quantity: 1, invisible: true });
+        renderBOM();
+        historyManager.saveState();
+    });
+
     if (isMobile) {
         document.body.classList.add('touch-mode');
         updateStatus('Mobile mode active.');
@@ -957,6 +1054,31 @@ function setupThemeToggle() {
 
 function setupToolbar() {
     document.querySelectorAll('[data-shape]').forEach(btn => btn.addEventListener('click', () => addShape(btn.dataset.shape)));
+    
+    const bindClick = (id, handler) => { const el = document.getElementById(id); if (el) el.addEventListener('click', handler); };
+    
+    // Hardware Toolbar
+    bindClick('add-extrusion', () => addHardware('extrusion'));
+    bindClick('add-motor', () => addHardware('motor'));
+    bindClick('add-screw', () => addHardware('screw'));
+    bindClick('wire-tool', () => {
+        isWiringMode = !isWiringMode;
+        if (isWiringMode) {
+            wirePoints = [];
+            updateStatus('Wire Mode: Click points to route wire. Press Enter to finish, Esc to cancel.');
+            document.getElementById('wire-tool').classList.add('active');
+            
+            // Add a preview sphere to show cursor location
+            if (!wirePreviewSphere) {
+                wirePreviewSphere = new THREE.Mesh(new THREE.SphereGeometry(0.1, 16, 16), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
+                scene.add(wirePreviewSphere);
+            }
+            wirePreviewSphere.visible = true;
+        } else {
+            cancelWire();
+        }
+    });
+    
     document.querySelectorAll('[data-transform]').forEach(btn => {
         btn.addEventListener('click', (e) => {
             document.querySelectorAll('[data-transform]').forEach(b => b.classList.remove('active'));
@@ -965,7 +1087,6 @@ function setupToolbar() {
         });
     });
     
-    const bindClick = (id, handler) => { const el = document.getElementById(id); if (el) el.addEventListener('click', handler); };
     bindClick('export-stl', exportSTL); bindClick('delete-selected', deleteSelected); bindClick('toggle-grid', toggleGrid);
     bindClick('unit-toggle', toggleUnit);
     bindClick('group-shapes', groupShapes);
@@ -980,10 +1101,10 @@ function setupToolbar() {
     bindClick('btn-undo', () => historyManager.undo());
     bindClick('btn-redo', () => historyManager.redo());
     bindClick('btn-save', () => {
-        const data = JSON.stringify({ version: "1.0", undoStack: historyManager.undoStack, redoStack: historyManager.redoStack });
+        const data = JSON.stringify({ version: "2.0", undoStack: historyManager.undoStack, redoStack: historyManager.redoStack });
         const blob = new Blob([data], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = 'project.hldk'; a.click(); URL.revokeObjectURL(url);
+        const a = document.createElement('a'); a.href = url; a.download = 'project.holo'; a.click(); URL.revokeObjectURL(url);
     });
     const fileLoad = document.getElementById('file-load');
     if (fileLoad) {
@@ -1048,10 +1169,25 @@ function setupToolbar() {
 
     window.addEventListener('keydown', (e) => {
         const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT';
+        
         if (e.key === 'Escape') {
-            if (isAlignMode) toggleAlignMode();
-            if (isDistributeMode) toggleDistributeMode();
+            if (isWiringMode) cancelWire();
+            else if (isAlignMode) toggleAlignMode();
+            else if (isDistributeMode) toggleDistributeMode();
+            else {
+                selectedShapes = [];
+                selectedShape = null;
+                transformControl.detach();
+                updateSelectionEffects();
+                updateStatus('Selection cleared');
+            }
         }
+        
+        if (e.key === 'Enter' && isWiringMode) {
+            if (wirePoints.length > 1) finalizeWire();
+            else cancelWire();
+        }
+        
         if (e.ctrlKey || e.metaKey) {
             if (e.key === 's') { e.preventDefault(); document.getElementById('btn-save').click(); }
             if (!isInput) {
@@ -1147,7 +1283,6 @@ function setupToolbar() {
                 if (transformControl.object) transformControl.updateMatrixWorld();
                 updateDimensions();
                 
-                // Keep CSG updated (if arrow keys were spammed, it might be slow, but history is grouped)
                 historyManager.saveState();
             }
         }
@@ -1183,6 +1318,464 @@ function addShape(type) {
     selectShape(mesh);
     updateStatus(`Added ${type}`);
     historyManager.saveState();
+}
+
+function createExtrusionShape(profile, slotType) {
+    const isV = slotType === 'v-slot';
+    const pW = parseInt(profile.substring(0, 2));
+    const pH = parseInt(profile.substring(2, 4));
+    
+    const w = pW / 10;
+    const h = pH / 10;
+    
+    const series = profile === '3030' ? 30 : 20;
+    const s = series / 10;
+    
+    const slotsX = Math.round(w / s);
+    const slotsY = Math.round(h / s);
+    
+    let openingH, chamferW, chamferD, wallD, innerH, verticalD, floorD, floorW, cornerCut;
+    
+            if (series === 30) { 
+        openingH = 0.40; 
+        chamferW = isV ? 0.20 : 0.0;
+        chamferD = isV ? 0.15 : 0.0;
+        wallD = 0.10; 
+        innerH = 0.75; // Decreased to thicken the outer corner blocks
+        verticalD = 0.50; // Mathematically aligned with floor to eliminate X support taper
+        floorD = 0.90; 
+        floorW = 0.35; // Mathematically aligned with wall to eliminate X support taper
+        cornerCut = 0.15; 
+    } else { 
+        openingH = isV ? 0.317 : 0.263; 
+        chamferW = isV ? 0.10 : 0.0;
+        chamferD = isV ? 0.10 : 0.0;
+        wallD = isV ? 0.05 : 0.15; 
+        innerH = 0.62; 
+        verticalD = 0.26; // Mathematically aligned with floor to eliminate X support taper
+        floorD = 0.634; 
+        floorW = 0.246; // Mathematically aligned with wall to eliminate X support taper
+        cornerCut = 0.15; 
+    }
+    
+    const shape = new THREE.Shape();
+    const pts = [];
+    
+    const addSide = (sx, sy, ex, ey, numSlots) => {
+        const dx = ex - sx; const dy = ey - sy;
+        const L = Math.hypot(dx, dy);
+        const ux = dx / L; const uy = dy / L;
+        const nx = -uy; const ny = ux; 
+        
+        pts.push(new THREE.Vector2(sx + ux * cornerCut, sy + uy * cornerCut));
+        
+        const segmentL = L / numSlots;
+        for (let i = 0; i < numSlots; i++) {
+            const centerDist = (i + 0.5) * segmentL;
+            const cx = sx + ux * centerDist;
+            const cy = sy + uy * centerDist;
+            
+            pts.push(new THREE.Vector2(cx - ux * (openingH + chamferW), cy - uy * (openingH + chamferW)));
+            pts.push(new THREE.Vector2(cx - ux * openingH + nx * chamferD, cy - uy * openingH + ny * chamferD));
+            pts.push(new THREE.Vector2(cx - ux * openingH + nx * (chamferD + wallD), cy - uy * openingH + ny * (chamferD + wallD)));
+            pts.push(new THREE.Vector2(cx - ux * innerH + nx * (chamferD + wallD), cy - uy * innerH + ny * (chamferD + wallD)));
+            pts.push(new THREE.Vector2(cx - ux * innerH + nx * verticalD, cy - uy * innerH + ny * verticalD));
+            pts.push(new THREE.Vector2(cx - ux * floorW + nx * floorD, cy - uy * floorW + ny * floorD));
+            pts.push(new THREE.Vector2(cx + ux * floorW + nx * floorD, cy + uy * floorW + ny * floorD));
+            pts.push(new THREE.Vector2(cx + ux * innerH + nx * verticalD, cy + uy * innerH + ny * verticalD));
+            pts.push(new THREE.Vector2(cx + ux * innerH + nx * (chamferD + wallD), cy + uy * innerH + ny * (chamferD + wallD)));
+            pts.push(new THREE.Vector2(cx + ux * openingH + nx * (chamferD + wallD), cy + uy * openingH + ny * (chamferD + wallD)));
+            pts.push(new THREE.Vector2(cx + ux * openingH + nx * chamferD, cy + uy * openingH + ny * chamferD));
+            pts.push(new THREE.Vector2(cx + ux * (openingH + chamferW), cy + uy * (openingH + chamferW)));
+        }
+        pts.push(new THREE.Vector2(ex - ux * cornerCut, ey - uy * cornerCut));
+    };
+    
+    addSide(-w/2, -h/2, w/2, -h/2, slotsX); 
+    addSide(w/2, -h/2, w/2, h/2, slotsY);   
+    addSide(w/2, h/2, -w/2, h/2, slotsX);   
+    addSide(-w/2, h/2, -w/2, -h/2, slotsY); 
+    
+    shape.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, pts[i].y);
+    
+    const holeR = series === 30 ? 0.365 : 0.21; 
+    for (let ix = 0; ix < slotsX; ix++) {
+        for (let iy = 0; iy < slotsY; iy++) {
+            const hx = -w/2 + (ix + 0.5) * s;
+            const hy = -h/2 + (iy + 0.5) * s;
+            
+            const hole = new THREE.Path();
+            const segments = 32;
+            for(let i=0; i<=segments; i++) {
+                let ang = -(i/segments) * Math.PI * 2; 
+                let r = holeR;
+                let m = i % 8;
+                if (m === 3 || m === 4 || m === 5) r = holeR * 1.25; 
+                
+                let px = hx + Math.cos(ang) * r;
+                let py = hy + Math.sin(ang) * r;
+                if (i === 0) hole.moveTo(px, py);
+                else hole.lineTo(px, py);
+            }
+            shape.holes.push(hole);
+        }
+    }
+    
+    // Generate parametric seam hollows for multi-block extrusions (2040, 4040, etc)
+    if (slotsX > 1 || slotsY > 1) {
+        const wt = (series === 30) ? 0.20 : 0.18; // Consistent wall thickness (2mm or 1.8mm)
+        const hole_r = (series === 30) ? 0.365 * 1.25 : 0.21 * 1.25;
+        const s_half = s / 2;
+        
+        const r_hole = s_half - hole_r - wt; // Reach towards a hole
+        const r_wall = s_half - wt;          // Reach towards an outer flat wall
+        const r_hollow = s_half/2 - wt/2;    // Reach towards another internal hollow (boundary at s/4)
+        
+        // D_bound is the maximum diagonal reach allowed by the 45-degree slot tapers
+        const D_bound = (series === 30) ? 1.46 : 0.86;
+        
+        const drawChamferedBox = (cx, cy, rxP, rxN, ryP, ryN) => {
+            const p = new THREE.Path();
+            
+            // Intersect bounding box with 4 diagonal half-planes to clear slot tapers safely
+            const tr_y = Math.min(ryP, D_bound - rxP);
+            const tr_x = Math.min(rxP, D_bound - ryP);
+            
+            const tl_y = Math.min(ryP, D_bound - rxN);
+            const tl_x = Math.max(-rxN, -(D_bound - ryP));
+            
+            const bl_y = Math.max(-ryN, -(D_bound - rxN));
+            const bl_x = Math.max(-rxN, -(D_bound - ryN));
+            
+            const br_y = Math.max(-ryN, -(D_bound - rxP));
+            const br_x = Math.min(rxP, D_bound - ryN);
+            
+            p.moveTo(cx + tr_x, cy + ryP);
+            p.lineTo(cx + rxP, cy + tr_y);
+            p.lineTo(cx + rxP, cy + br_y);
+            p.lineTo(cx + br_x, cy - ryN);
+            p.lineTo(cx + bl_x, cy - ryN);
+            p.lineTo(cx - rxN, cy + bl_y);
+            p.lineTo(cx - rxN, cy + tl_y);
+            p.lineTo(cx + tl_x, cy + ryP);
+            p.lineTo(cx + tr_x, cy + ryP);
+            
+            shape.holes.push(p);
+        };
+
+        // Horizontal seams
+        for (let ix = 0; ix < slotsX - 1; ix++) {
+            for (let iy = 0; iy < slotsY; iy++) {
+                const cx = -w/2 + (ix + 1) * s;
+                const cy = -h/2 + (iy + 0.5) * s;
+                const ryP = (iy === slotsY - 1) ? r_wall : r_hollow;
+                const ryN = (iy === 0) ? r_wall : r_hollow;
+                drawChamferedBox(cx, cy, r_hole, r_hole, ryP, ryN);
+            }
+        }
+        // Vertical seams
+        for (let ix = 0; ix < slotsX; ix++) {
+            for (let iy = 0; iy < slotsY - 1; iy++) {
+                const cx = -w/2 + (ix + 0.5) * s;
+                const cy = -h/2 + (iy + 1) * s;
+                const rxP = (ix === slotsX - 1) ? r_wall : r_hollow;
+                const rxN = (ix === 0) ? r_wall : r_hollow;
+                drawChamferedBox(cx, cy, rxP, rxN, r_hole, r_hole);
+            }
+        }
+        // Cross junctions
+        for (let ix = 0; ix < slotsX - 1; ix++) {
+            for (let iy = 0; iy < slotsY - 1; iy++) {
+                const cx = -w/2 + (ix + 1) * s;
+                const cy = -h/2 + (iy + 1) * s;
+                // Cross junctions face other hollows in all 4 directions
+                drawChamferedBox(cx, cy, r_hollow, r_hollow, r_hollow, r_hollow);
+            }
+        }
+    }
+    
+    // Corner hollows for 30-series outer perimeter
+    if (series === 30) {
+        const offsetX = w/2 - 0.45;
+        const offsetY = h/2 - 0.45;
+        const cw = 0.25;
+        for (let dx of [-1, 1]) {
+            for (let dy of [-1, 1]) {
+                const cx = dx * offsetX;
+                const cy = dy * offsetY;
+                const hollow = new THREE.Path();
+                hollow.moveTo(cx - cw/2, cy + cw/2);
+                hollow.lineTo(cx + cw/2, cy + cw/2); 
+                hollow.lineTo(cx + cw/2, cy - cw/2); 
+                hollow.lineTo(cx - cw/2, cy - cw/2); 
+                hollow.lineTo(cx - cw/2, cy + cw/2); 
+                shape.holes.push(hollow);
+            }
+        }
+    }
+    
+    return shape;
+}
+
+function createMotorGeometry(nema) {
+    // Determine motor dimensions based on NEMA size (approximate standard sizes in cm)
+    let bodySize = 4.23; // NEMA 17 standard width (42.3mm)
+    let bodyLength = 4.7; // Standard length
+    let shaftRadius = 0.25; // 5mm diameter
+    let shaftLength = 2.4; // 24mm length
+    let flangeRadius = 1.1; // 22mm diameter centering boss
+
+    if (nema === '14') { bodySize = 3.52; bodyLength = 3.4; shaftRadius = 0.25; shaftLength = 2.0; flangeRadius = 1.1; }
+    if (nema === '23') { bodySize = 5.64; bodyLength = 7.6; shaftRadius = 0.3175; shaftLength = 2.1; flangeRadius = 1.91; }
+    if (nema === '34') { bodySize = 8.6; bodyLength = 11.4; shaftRadius = 0.635; shaftLength = 3.2; flangeRadius = 3.65; }
+
+    const geometries = [];
+
+    // Main Body (rounded box)
+    const cornerRadius = bodySize * 0.15;
+    const shape = new THREE.Shape();
+    const half = bodySize / 2;
+    shape.moveTo(-half + cornerRadius, -half);
+    shape.lineTo(half - cornerRadius, -half);
+    shape.quadraticCurveTo(half, -half, half, -half + cornerRadius);
+    shape.lineTo(half, half - cornerRadius);
+    shape.quadraticCurveTo(half, half, half - cornerRadius, half);
+    shape.lineTo(-half + cornerRadius, half);
+    shape.quadraticCurveTo(-half, half, -half, half - cornerRadius);
+    shape.lineTo(-half, -half + cornerRadius);
+    shape.quadraticCurveTo(-half, -half, -half + cornerRadius, -half);
+
+    const bodyGeom = new THREE.ExtrudeGeometry(shape, { depth: bodyLength, bevelEnabled: false, curveSegments: 4 });
+    // Center it on the origin appropriately (shaft facing +Z)
+    bodyGeom.translate(0, 0, -bodyLength);
+    geometries.push(bodyGeom);
+
+    // Front Flange (Boss)
+    const flangeGeom = new THREE.CylinderGeometry(flangeRadius, flangeRadius, 0.2, 32);
+    flangeGeom.rotateX(Math.PI / 2);
+    flangeGeom.translate(0, 0, 0.1);
+    geometries.push(flangeGeom);
+
+    // Shaft
+    const shaftGeom = new THREE.CylinderGeometry(shaftRadius, shaftRadius, shaftLength, 16);
+    shaftGeom.rotateX(Math.PI / 2);
+    shaftGeom.translate(0, 0, shaftLength / 2);
+    geometries.push(shaftGeom);
+
+    // Merge everything
+    const mergedGeometry = THREE.BufferGeometryUtils.mergeBufferGeometries(geometries, false);
+    return mergedGeometry;
+}
+
+function createScrewGeometry(size, headType) {
+    // Parse size (e.g. M3 -> 3)
+    const metricSize = parseInt(size.substring(1)) || 3;
+    const radius = metricSize / 10 / 2; // radius in cm (M3 -> 1.5mm -> 0.15cm)
+    const threadLength = 1.0; // Default 10mm length
+
+    const geometries = [];
+
+    // Thread body (simple cylinder for performance)
+    const threadGeom = new THREE.CylinderGeometry(radius, radius, threadLength, 16);
+    threadGeom.translate(0, threadLength / 2, 0); // Base at origin, grows in +Y
+    geometries.push(threadGeom);
+
+    // Head
+    let headRadius = radius * 1.8; // Approximate standard ratios
+    let headHeight = radius * 2.0;
+
+    if (headType === 'socket') {
+        headRadius = radius * 1.9;
+        headHeight = radius * 2.0;
+        
+        // Socket head: Extrude a circle with a hex hole
+        const headShape = new THREE.Shape();
+        headShape.absarc(0, 0, headRadius, 0, Math.PI * 2, false);
+        
+        const hexRadius = radius * 0.9;
+        const hexPath = new THREE.Path();
+        for (let i = 0; i < 6; i++) {
+            const angle = (i / 6) * Math.PI * 2;
+            const x = Math.cos(angle) * hexRadius;
+            const y = Math.sin(angle) * hexRadius;
+            if (i === 0) hexPath.moveTo(x, y);
+            else hexPath.lineTo(x, y);
+        }
+        hexPath.lineTo(Math.cos(0) * hexRadius, Math.sin(0) * hexRadius); // close path
+        headShape.holes.push(hexPath);
+        
+        const headGeom = new THREE.ExtrudeGeometry(headShape, { depth: headHeight, bevelEnabled: true, bevelSegments: 1, steps: 1, bevelSize: 0.02, bevelThickness: 0.02, curveSegments: 12 });
+        headGeom.rotateX(-Math.PI / 2); // Orient correctly
+        headGeom.translate(0, threadLength + headHeight, 0);
+        geometries.push(headGeom);
+    } else if (headType === 'flat') {
+        headRadius = radius * 2.2;
+        headHeight = radius * 1.5;
+        // Flat countersunk head
+        const headGeom = new THREE.CylinderGeometry(headRadius, radius, headHeight, 16);
+        headGeom.translate(0, threadLength + headHeight / 2, 0);
+        geometries.push(headGeom);
+    } else if (headType === 'button') {
+        headRadius = radius * 2.0;
+        headHeight = radius * 1.2;
+        // Button dome head (half sphere-ish)
+        const headGeom = new THREE.SphereGeometry(headRadius, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+        // Squash it a bit to look like a button head
+        headGeom.scale(1, headHeight / headRadius, 1);
+        headGeom.translate(0, threadLength, 0);
+        geometries.push(headGeom);
+    } else if (headType === 'set') {
+        // Set screw has no real head, just a hex hole inside the thread itself. 
+        // We can just use the thread we already made, but let's hollow out the top.
+        // For simplicity, we just leave the cylinder as is.
+    }
+
+    const mergedGeometry = THREE.BufferGeometryUtils.mergeBufferGeometries(geometries, false);
+    return mergedGeometry;
+}
+
+function generateHardwareGeometry(type, props) {
+    let geometry;
+    if (type === 'extrusion') {
+        const profile = props.profile || '2020';
+        const slotType = props.slot || 'v-slot';
+        const length = props.length || 10;
+        
+        const shape = createExtrusionShape(profile, slotType);
+        
+        geometry = new THREE.ExtrudeGeometry(shape, { depth: length, bevelEnabled: false, curveSegments: 8 });
+        geometry.translate(0, 0, -length/2);
+    } else if (type === 'motor') {
+        const nema = props.nema || '17';
+        geometry = createMotorGeometry(nema);
+    } else if (type === 'screw') {
+        const size = props.size || 'M3';
+        const head = props.head || 'socket';
+        geometry = createScrewGeometry(size, head);
+    }
+    return geometry;
+}
+
+function addHardware(type) {
+    let name = "Hardware";
+    let price = 0.0;
+    let hwProps = {};
+    
+    if (type === 'extrusion') {
+        hwProps = {
+            profile: document.getElementById('hw-extrusion-profile')?.value || '2020',
+            slot: document.getElementById('hw-extrusion-slot')?.value || 'v-slot',
+            length: 10
+        };
+        name = `Alu Extrusion ${hwProps.profile}`;
+        price = 2.50;
+    } else if (type === 'motor') {
+        hwProps = { nema: document.getElementById('hw-motor-type')?.value || '17' };
+        name = `Stepper NEMA ${hwProps.nema}`;
+        price = 12.00;
+    } else if (type === 'screw') {
+        hwProps = {
+            size: document.getElementById('hw-screw-size')?.value || 'M3',
+            head: document.getElementById('hw-screw-head')?.value || 'socket'
+        };
+        name = `Screw ${hwProps.size}`;
+        price = 0.05;
+    }
+
+    const geometry = generateHardwareGeometry(type, hwProps);
+
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+        color: 0x888888, transparent: false, opacity: 1.0, roughness: 0.5, metalness: 0.8
+    }));
+    
+    const worldSnap = unitMode === 'inch' ? snapPrecision * 2.54 : snapPrecision / 10;
+    mesh.position.set(0, Math.round(1 / worldSnap) * worldSnap, 0);
+    
+    mesh.userData = { type: type, originalGeometry: geometry, bindings: {}, isComposite: false, isHole: false, isHardware: true, hwProps: hwProps };
+    mesh.uuid = THREE.MathUtils.generateUUID();
+    mesh.name = name;
+    
+    geometry.computeBoundingBox();
+    const sz = new THREE.Vector3();
+    geometry.boundingBox.getSize(sz);
+    mesh.userData.baseSize = { x: sz.x, y: sz.y, z: sz.z };
+
+    scene.add(mesh);
+    shapes.push(mesh);
+    
+    // Add to BOM
+    bomItems.push({ id: mesh.uuid, name: name, price: price, quantity: 1, invisible: false, meshId: mesh.uuid });
+    renderBOM();
+    
+    selectShape(mesh);
+    updateStatus(`Added ${name}`);
+    historyManager.saveState();
+}
+
+function updateWirePreview() {
+    if (wirePreviewLine) {
+        scene.remove(wirePreviewLine);
+        wirePreviewLine.geometry.dispose();
+        wirePreviewLine = null;
+    }
+    if (wirePoints.length > 0) {
+        const mat = new THREE.LineBasicMaterial({ color: 0xff0000, linewidth: 2 });
+        // If there's only 1 point, we'll draw a line to the preview sphere in onPointerMove
+        const pts = [...wirePoints];
+        if (wirePreviewSphere && wirePreviewSphere.visible) {
+            pts.push(wirePreviewSphere.position.clone());
+        }
+        
+        if (pts.length > 1) {
+            const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+            const geom = new THREE.BufferGeometry().setFromPoints(curve.getPoints(50));
+            wirePreviewLine = new THREE.Line(geom, mat);
+            scene.add(wirePreviewLine);
+        }
+    }
+}
+
+function finalizeWire() {
+    if (wirePoints.length < 2) return cancelWire();
+    
+    // Create tube geometry
+    const curve = new THREE.CatmullRomCurve3(wirePoints, false, 'catmullrom', 0.5);
+    const geometry = new THREE.TubeGeometry(curve, Math.max(20, wirePoints.length * 10), 0.15, 8, false);
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+        color: 0xcc0000, roughness: 0.7, metalness: 0.1
+    }));
+    
+    mesh.userData = { type: 'wire', originalGeometry: geometry, bindings: {}, isComposite: false, isHardware: true, wirePoints: wirePoints.map(p => p.clone()) };
+    mesh.uuid = THREE.MathUtils.generateUUID();
+    mesh.name = `Wire Route`;
+    
+    geometry.computeBoundingBox();
+    const sz = new THREE.Vector3();
+    geometry.boundingBox.getSize(sz);
+    mesh.userData.baseSize = { x: sz.x || 1, y: sz.y || 1, z: sz.z || 1 };
+
+    scene.add(mesh);
+    shapes.push(mesh);
+    
+    // Calculate length
+    const lengthCm = curve.getLength();
+    
+    bomItems.push({ id: mesh.uuid, name: `22AWG Wire (${lengthCm.toFixed(1)}cm)`, price: (lengthCm * 0.05).toFixed(2), quantity: 1, invisible: false, meshId: mesh.uuid });
+    renderBOM();
+    
+    selectShape(mesh);
+    historyManager.saveState();
+    cancelWire();
+}
+
+function cancelWire() {
+    isWiringMode = false;
+    wirePoints = [];
+    if (wirePreviewLine) { scene.remove(wirePreviewLine); wirePreviewLine.geometry.dispose(); wirePreviewLine = null; }
+    if (wirePreviewSphere) { wirePreviewSphere.visible = false; }
+    document.getElementById('wire-tool').classList.remove('active');
+    updateStatus('Wire routing cancelled.');
 }
 
 function updateSelectionEffects() {
@@ -1249,8 +1842,33 @@ function updateSelectionEffects() {
 }
 
 function selectPropertyNode(node) {
-    currentPropertyNode = node;
-    document.getElementById('obj-color').value = '#' + node.material.color.getHexString();
+    currentPropertyNode = node;    
+    document.getElementById('hardware-properties').style.display = 'none';
+    if (selectedShape.userData.isHardware) {
+        document.getElementById('hardware-properties').style.display = 'flex';
+        // Hide others, show relevant
+        document.querySelectorAll('.hw-extrusion, .hw-motor, .hw-screw').forEach(el => el.style.display = 'none');
+        document.querySelectorAll(`.hw-${selectedShape.userData.type}`).forEach(el => el.style.display = 'flex');
+        
+        // Populate dropdowns based on hwProps
+        const props = selectedShape.userData.hwProps || {};
+        if (selectedShape.userData.type === 'extrusion') {
+            const profileEl = document.getElementById('hw-extrusion-profile');
+            if (profileEl && props.profile) profileEl.value = props.profile;
+            const slotEl = document.getElementById('hw-extrusion-slot');
+            if (slotEl && props.slot) slotEl.value = props.slot;
+        } else if (selectedShape.userData.type === 'motor') {
+            const nemaEl = document.getElementById('hw-motor-type');
+            if (nemaEl && props.nema) nemaEl.value = props.nema;
+        } else if (selectedShape.userData.type === 'screw') {
+            const sizeEl = document.getElementById('hw-screw-size');
+            if (sizeEl && props.size) sizeEl.value = props.size;
+            const headEl = document.getElementById('hw-screw-head');
+            if (headEl && props.head) headEl.value = props.head;
+        }
+    }
+    
+    document.getElementById('obj-color').value = '#' + (Array.isArray(selectedShape.material) ? selectedShape.material[0].color : selectedShape.material.color).getHexString();
     document.getElementById('obj-transparent').checked = node.material.transparent;
     
     const bindings = node.userData.bindings || {};
@@ -1328,6 +1946,25 @@ function onPointerDown(event) {
     mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(mouse, activeCamera);
 
+    if (isWiringMode) {
+        // intersect against shapes or a plane
+        const intersects = raycaster.intersectObjects(shapes);
+        let pt;
+        if (intersects.length > 0) {
+            pt = intersects[0].point;
+        } else {
+            const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+            pt = new THREE.Vector3();
+            raycaster.ray.intersectPlane(plane, pt);
+        }
+        
+        if (pt) {
+            wirePoints.push(pt.clone());
+            updateWirePreview();
+        }
+        return;
+    }
+
     const intersects = raycaster.intersectObjects(shapes);
     if (intersects.length > 0) {
         const clickedShape = intersects[0].object;
@@ -1340,6 +1977,21 @@ function onPointerDown(event) {
 }
 
 function onPointerMove(event) {
+    if (isWiringMode && wirePreviewSphere) {
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        raycaster.setFromCamera(mouse, activeCamera);
+        const intersects = raycaster.intersectObjects(shapes);
+        if (intersects.length > 0) {
+            wirePreviewSphere.position.copy(intersects[0].point);
+        } else {
+            const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+            const pt = new THREE.Vector3();
+            raycaster.ray.intersectPlane(plane, pt);
+            if (pt) wirePreviewSphere.position.copy(pt);
+        }
+        updateWirePreview();
+    }
+
     if (isAreaSelecting) {
         selectionDiv.style.left = Math.min(selectionStartPoint.x, event.clientX) + 'px';
         selectionDiv.style.top = Math.min(selectionStartPoint.y, event.clientY) + 'px';
@@ -1766,9 +2418,19 @@ function serializeShape(mesh) {
 }
 
 function serializeScene() {
+    renderer.render(scene, activeCamera);
+    const thumbnail = renderer.domElement.toDataURL('image/webp', 0.2);
     return {
         shapes: shapes.map(serializeShape),
-        variables: { ...window.holodeckVariables }
+        variables: { ...window.holodeckVariables },
+        metadata: {
+            status: document.getElementById('lc-status')?.value || 'Draft',
+            category: document.getElementById('lc-category')?.value || '',
+            productLine: document.getElementById('lc-line')?.value || '',
+            version: document.getElementById('lc-version')?.value || '1.0'
+        },
+        bom: JSON.parse(JSON.stringify(bomItems)),
+        thumbnail: thumbnail
     };
 }
 
@@ -1832,6 +2494,21 @@ function deserializeScene(state) {
     window.holodeckVariables = { ...state.variables };
     renderVariables();
     
+    if (state.metadata) {
+        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+        setVal('lc-status', state.metadata.status || 'Draft');
+        setVal('lc-category', state.metadata.category || '');
+        setVal('lc-line', state.metadata.productLine || '');
+        setVal('lc-version', state.metadata.version || '1.0');
+    }
+    
+    if (state.bom) {
+        bomItems = JSON.parse(JSON.stringify(state.bom));
+    } else {
+        bomItems = [];
+    }
+    renderBOM();
+    
     state.shapes.forEach(shapeData => {
         const mesh = deserializeShape(shapeData);
         scene.add(mesh);
@@ -1844,6 +2521,123 @@ function deserializeScene(state) {
     updateSelectionEffects();
     document.getElementById('properties-panel').classList.remove('active');
 }
+
+// Local Project Dashboard Logic
+const btnDashboard = document.getElementById('btn-dashboard');
+const dashboardOverlay = document.getElementById('dashboard-overlay');
+const closeDashboard = document.getElementById('close-dashboard');
+const btnSelectDir = document.getElementById('btn-select-dir');
+const dashboardGrid = document.getElementById('dashboard-grid');
+const dashboardStatus = document.getElementById('dashboard-status');
+
+if (btnDashboard) {
+    btnDashboard.addEventListener('click', () => {
+        dashboardOverlay.style.display = 'flex';
+    });
+}
+if (closeDashboard) {
+    closeDashboard.addEventListener('click', () => {
+        dashboardOverlay.style.display = 'none';
+    });
+}
+
+if (btnSelectDir) {
+    btnSelectDir.addEventListener('click', async () => {
+        try {
+            const dirHandle = await window.showDirectoryPicker({ mode: 'read' });
+            dashboardStatus.innerText = `Folder: ${dirHandle.name}`;
+            dashboardGrid.innerHTML = '';
+            
+            for await (const entry of dirHandle.values()) {
+                if (entry.kind === 'file' && entry.name.endsWith('.holo')) {
+                    try {
+                        const file = await entry.getFile();
+                        const text = await file.text();
+                        const data = JSON.parse(text);
+                        if (data.version && data.undoStack && data.undoStack.length > 0) {
+                            const state = data.undoStack[data.undoStack.length - 1];
+                            const meta = state.metadata || {};
+                            let cost = 0;
+                            if (state.bom) {
+                                state.bom.forEach(i => cost += (i.price || 0) * (i.quantity || 1));
+                            }
+                            const thumbnail = state.thumbnail || '';
+                            
+                            const card = document.createElement('div');
+                            card.className = 'project-card';
+                            card.innerHTML = `
+                                ${thumbnail ? `<img src="${thumbnail}" alt="Thumbnail">` : '<div style="width:100%; height:150px; background:#222;"></div>'}
+                                <h3>${entry.name.replace('.holo', '')}</h3>
+                                <div class="meta">
+                                    <span>${meta.status || 'Draft'}</span>
+                                    <span>v${meta.version || '1.0'}</span>
+                                </div>
+                                <div class="meta">
+                                    <span>${meta.category || 'Uncategorized'}</span>
+                                    <span>$${cost.toFixed(2)}</span>
+                                </div>
+                            `;
+                            card.addEventListener('click', () => {
+                                historyManager.undoStack = data.undoStack;
+                                historyManager.redoStack = data.redoStack || [];
+                                historyManager.restoreState(state);
+                                updateToolbarButtons();
+                                dashboardOverlay.style.display = 'none';
+                                updateStatus(`Loaded ${entry.name}`);
+                            });
+                            dashboardGrid.appendChild(card);
+                        }
+                    } catch (err) {
+                        console.error('Error parsing', entry.name, err);
+                    }
+                }
+            }
+        } catch (err) {
+            console.error(err);
+            dashboardStatus.innerText = 'Folder selection cancelled or failed.';
+        }
+    });
+}
+
+function updateSelectedHardwareProfile() {
+    if (!selectedShape || !selectedShape.userData.isHardware) return;
+    const type = selectedShape.userData.type;
+    const props = selectedShape.userData.hwProps || {};
+    
+    if (type === 'extrusion') {
+        props.profile = document.getElementById('hw-extrusion-profile').value;
+        props.slot = document.getElementById('hw-extrusion-slot').value;
+        selectedShape.name = `Alu Extrusion ${props.profile}`;
+    } else if (type === 'motor') {
+        props.nema = document.getElementById('hw-motor-type').value;
+        selectedShape.name = `Stepper NEMA ${props.nema}`;
+    } else if (type === 'screw') {
+        props.size = document.getElementById('hw-screw-size').value;
+        props.head = document.getElementById('hw-screw-head').value;
+        selectedShape.name = `Screw ${props.size}`;
+    }
+    
+    const newGeom = generateHardwareGeometry(type, props);
+    if (selectedShape.geometry) selectedShape.geometry.dispose();
+    selectedShape.geometry = newGeom;
+    selectedShape.userData.originalGeometry = newGeom;
+    
+    newGeom.computeBoundingBox();
+    const sz = new THREE.Vector3();
+    newGeom.boundingBox.getSize(sz);
+    selectedShape.userData.baseSize = { x: sz.x, y: sz.y, z: sz.z };
+    
+    // Refresh properties panel to show new dimensions
+    if (currentPropertyNode) selectPropertyNode(currentPropertyNode);
+    updateDimensions();
+    renderBOM();
+    historyManager.saveState();
+}
+
+['hw-extrusion-profile', 'hw-extrusion-slot', 'hw-motor-type', 'hw-screw-size', 'hw-screw-head'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', updateSelectedHardwareProfile);
+});
 
 init();
 animate();
