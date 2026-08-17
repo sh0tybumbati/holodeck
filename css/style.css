@@ -233,7 +233,9 @@ input, textarea {
     flex-direction: column;
     gap: 12px;
     z-index: 100;
-    max-height: calc(100vh - 100px);
+    /* Stops above the ViewCube, which is anchored bottom-right in the same column.
+       Verified by test/measure-layout. */
+    max-height: calc(100vh - 330px);
     overflow-y: auto;
     /* hide scrollbar for clean look */
     -ms-overflow-style: none;
@@ -431,13 +433,56 @@ input, textarea {
     border-bottom: 2px solid var(--accent);
 }
 
+/* Touch devices get tap targets that a finger can actually hit. Set from JS on the body,
+   so it applies regardless of viewport width — a tablet is wide and still touch-driven. */
+body.touch-mode .tool-btn { min-width: 40px; min-height: 40px; padding: 8px 12px; }
+body.touch-mode .icon-btn { width: 40px; height: 40px; padding: 8px; }
+body.touch-mode .tool-select { min-height: 40px; }
+
+/* Narrow screens. Every panel here is absolutely positioned, so the layout is a set of
+   reserved bands rather than a flow: two rows across the top, the creation tools down the
+   left under them, and a bottom strip for the status bar with the viewcube and variables
+   sitting clear above it. Measured with test/measure-layout so nothing overlaps. */
 @media (max-width: 768px) {
-    #top-toolbar { width: 90%; justify-content: center; gap: 8px; padding: 8px; }
     .tool-btn { padding: 6px 10px; font-size: 11px; }
     .icon-btn { width: 32px; height: 32px; padding: 6px; }
-    #status-bar { width: 90%; text-align: center; bottom: 8px; padding: 8px 12px; font-size: 11px; }
-    #right-sidebar { top: auto; bottom: 60px; right: 8px; width: 200px; }
+    .toolbar { gap: 6px; padding: 6px 8px; }
+
+    /* Row 1: file/history on the left, theme and panel toggles on the right. */
+    #top-left-toolbar { top: 8px; left: 8px; }
+    #theme-toggles { top: 8px; right: 8px; gap: 4px; }
+    #color-theme-select { min-width: 0; width: 76px; font-size: 10px; padding: 4px 6px; }
+
+    /* Row 2: transform and boolean tools, free to wrap onto a second line. The row offsets
+       leave space for the taller touch-mode buttons below. */
+    #top-toolbar {
+        top: 70px; left: 8px; right: 8px; transform: none;
+        justify-content: center; flex-wrap: wrap;
+    }
+
+    /* Creation tools run down the left, below both top rows, scrolling rather than growing
+       into the variables panel. */
+    #left-sidebar { top: 132px; left: 8px; max-height: calc(100vh - 330px); overflow-y: auto; }
+
+    /* Properties/BOM/lifecycle: narrower, and capped so it cannot reach the bottom strip. */
+    #right-sidebar { top: 132px; bottom: auto; right: 8px; width: 168px; max-height: 38vh; }
+
+    /* Bottom strip, stacked above the status bar. */
+    #viewcube-wrapper {
+        bottom: 52px; right: 8px;
+        transform: scale(0.8); transform-origin: bottom right;
+    }
+    #variables-panel { bottom: 52px; left: 8px; width: 150px; max-height: 26vh; overflow-y: auto; }
+    #status-bar {
+        left: 8px; right: 8px; bottom: 8px; transform: none;
+        justify-content: center; text-align: center; padding: 8px 12px; font-size: 11px;
+    }
+
+    /* Touch targets give up a little size here: three toolbars have to share ~500px. */
+    body.touch-mode .tool-btn { min-width: 36px; min-height: 36px; padding: 6px 8px; }
+    body.touch-mode .icon-btn { width: 36px; height: 36px; padding: 6px; }
 }
+
 
 /* Dashboard Project Card */
 .project-card {

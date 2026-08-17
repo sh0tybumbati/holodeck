@@ -13,8 +13,9 @@
 
 import { createServer } from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -105,9 +106,14 @@ if (/SyntaxError/.test(parseCheck.stderr || '')) {
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const port = server.address().port;
 
+// Its own profile: without this the browser attaches to an already-running instance and the
+// run would share (and disturb) the user's real browser session.
+const profileDir = await mkdtemp(join(tmpdir(), 'holodeck-test-'));
+
 const browser = spawn(findBrowser(), [
     '--headless=new', '--disable-gpu', '--use-angle=swiftshader',
     '--enable-unsafe-swiftshader', '--no-sandbox',
+    `--user-data-dir=${profileDir}`,
     `http://127.0.0.1:${port}/index.html`
 ], { stdio: 'ignore' });
 
@@ -116,6 +122,8 @@ const raw = await Promise.race([resultsPromise, timeout]);
 
 browser.kill('SIGKILL');
 server.close();
+// Best-effort: the browser may still be flushing its profile as it dies.
+await rm(profileDir, { recursive: true, force: true }).catch(() => {});
 
 if (raw === null) {
     console.error(`Harness did not report within ${RUN_TIMEOUT_MS / 1000}s.`);
