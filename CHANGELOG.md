@@ -33,7 +33,11 @@ All notable changes to this project will be documented in this file.
 - **Gizmo Raycasting Priority**: Optimized the Three.js raycaster to strictly prioritize gizmo handles over the bounding-box wireframe, completely resolving click-occlusion issues.
 - **Asset Caching**: Added cache-busting version strings (`?v=2`) to HTML script and link tags to ensure clients receive immediate updates.
 
+### Changed
+- **Project File Format (2.1)**: A `.holo` file now carries a single 320px thumbnail at the top level instead of one full-resolution capture inside every history state. Files written by earlier versions still load, and the dashboard falls back to their per-state thumbnail.
+
 ### Fixed
+- **Save Size & Per-Action Cost**: Every `saveState()` — every shape added, every colour tweak, every arrow-key nudge — did a synchronous full-canvas render plus `toDataURL`, and wrote the result into the history state. Measured at 35.9 KB per state, so an eight-cube project saved an 897 KB file that was ~97% thumbnail. State is now 1.4 KB, the thumbnail is captured once at save time, and the undo stack is capped at 200 states.
 - **Properties Panel Target**: `selectPropertyNode` read the global selection instead of the node it was given, so editing a variable with nothing selected threw, and a group's sub-part showed the group's colour and hardware parameters rather than its own. The panel now reads the node it was handed, the hardware dropdowns write to that same node (re-cutting the enclosing group when the part is inside one), and the panel's target is cleared on deselect instead of pointing at a deleted mesh.
 - **Grouping**: Grouping two shapes reported `Grouping failed` and left the group in the scene anyway. The group mesh was built without a `baseSize`, which the properties panel then dereferenced.
 - **Undo/Save After Grouping**: Once a group existed, every subsequent save threw and was swallowed, silently freezing undo/redo and writing stale `.holo` files for the rest of the session. The serializer still expected the old binary `left`/`right` CSG tree; groups are now stored as their n-ary `groupChildren` and the CSG result is recomputed on load.

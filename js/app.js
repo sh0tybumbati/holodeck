@@ -1123,7 +1123,12 @@ function setupToolbar() {
     bindClick('btn-undo', () => historyManager.undo());
     bindClick('btn-redo', () => historyManager.redo());
     bindClick('btn-save', () => {
-        const data = JSON.stringify({ version: "2.0", undoStack: historyManager.undoStack, redoStack: historyManager.redoStack });
+        const data = JSON.stringify({
+            version: "2.1",
+            thumbnail: captureThumbnail(),
+            undoStack: historyManager.undoStack,
+            redoStack: historyManager.redoStack
+        });
         const blob = new Blob([data], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a'); a.href = url; a.download = 'project.holo'; a.click(); URL.revokeObjectURL(url);
@@ -2430,6 +2435,8 @@ function animate() {
 }
 
 // === HISTORY & UNDO/REDO LOGIC ===
+const MAX_HISTORY_STATES = 200;
+
 class HistoryManager {
     constructor() {
         this.undoStack = [];
@@ -2441,6 +2448,10 @@ class HistoryManager {
         if (this.isRestoring) return;
         const state = serializeScene();
         this.undoStack.push(state);
+        // Bounded so a long session cannot grow the stack, and the saved file with it,
+        // without limit. The oldest state is dropped, never the base state's role: undo()
+        // stops at one remaining entry either way.
+        if (this.undoStack.length > MAX_HISTORY_STATES) this.undoStack.shift();
         this.redoStack = [];
         updateToolbarButtons();
     }
@@ -2513,9 +2524,9 @@ function serializeShape(mesh) {
     return data;
 }
 
+// Called on every action, so it must stay cheap: no rendering, no canvas reads. The project
+// thumbnail is captured once at save time by captureThumbnail() instead.
 function serializeScene() {
-    renderer.render(scene, activeCamera);
-    const thumbnail = renderer.domElement.toDataURL('image/webp', 0.2);
     return {
         shapes: shapes.map(serializeShape),
         variables: { ...window.holodeckVariables },
@@ -2525,9 +2536,28 @@ function serializeScene() {
             productLine: document.getElementById('lc-line')?.value || '',
             version: document.getElementById('lc-version')?.value || '1.0'
         },
-        bom: JSON.parse(JSON.stringify(bomItems)),
-        thumbnail: thumbnail
+        bom: JSON.parse(JSON.stringify(bomItems))
     };
+}
+
+// One downscaled snapshot for the project dashboard card. The WebGL drawing buffer is only
+// readable in the same task as the render, so the draw has to follow it immediately.
+const THUMBNAIL_WIDTH = 320;
+function captureThumbnail() {
+    try {
+        renderer.render(scene, activeCamera);
+        const source = renderer.domElement;
+        if (!source.width || !source.height) return '';
+
+        const canvas = document.createElement('canvas');
+        canvas.width = THUMBNAIL_WIDTH;
+        canvas.height = Math.max(1, Math.round(source.height * (THUMBNAIL_WIDTH / source.width)));
+        canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/webp', 0.6);
+    } catch (e) {
+        console.error('Thumbnail capture failed:', e);
+        return '';
+    }
 }
 
 // Rebuilds a leaf geometry from its saved userData. Hardware is regenerated from its
@@ -2676,7 +2706,9 @@ if (btnSelectDir) {
                             if (state.bom) {
                                 state.bom.forEach(i => cost += (i.price || 0) * (i.quantity || 1));
                             }
-                            const thumbnail = state.thumbnail || '';
+                            // v2.1 stores one thumbnail per file; older files carried one in
+                            // every history state.
+                            const thumbnail = data.thumbnail || state.thumbnail || '';
                             
                             const card = document.createElement('div');
                             card.className = 'project-card';

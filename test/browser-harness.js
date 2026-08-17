@@ -231,6 +231,68 @@ async function run() {
         partColours.length === 2 && partColours[0] !== partColours[1],
         `parts=${parts.options.length} colours=${partColours.join(',')}`);
 
+    // 8. A thumbnail belongs to the saved file, not to every history state. It used to be
+    //    captured on every saveState, costing a synchronous full-canvas render plus
+    //    toDataURL per action and writing ~33 KB into each entry of the saved stack.
+    clearScene();
+    for (let i = 0; i < 8; i++) document.querySelector('[data-shape="cube"]').click();
+    byId('btn-save').click();
+    const saved = JSON.parse(await lastBlobText());
+    const savedBytes = (await lastBlobText()).length;
+
+    check('save-has-one-thumbnail-not-one-per-state',
+        typeof saved.thumbnail === 'string' && saved.thumbnail.startsWith('data:image')
+        && saved.undoStack.every(s => s.thumbnail === undefined),
+        `fileThumbnail=${typeof saved.thumbnail === 'string' ? saved.thumbnail.length + 'b' : 'missing'} ` +
+        `statesCarryingOne=${saved.undoStack.filter(s => s.thumbnail !== undefined).length}/${saved.undoStack.length}`);
+
+    const perState = Math.round((savedBytes - (saved.thumbnail || '').length) / saved.undoStack.length);
+    check('history-state-is-small', perState < 2000,
+        `${perState} bytes/state over ${saved.undoStack.length} states (was ~33000)`);
+
+    // The thumbnail is now downscaled off the WebGL canvas, which only reads back in the same
+    // task as the render — so check it decodes and actually carries picture, not a blank card.
+    const img = new Image();
+    const loaded = await new Promise(resolve => {
+        img.onload = () => resolve(true);
+        img.onerror = () => resolve(false);
+        img.src = saved.thumbnail || '';
+    });
+    let distinctPixels = 0;
+    if (loaded) {
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const px = ctx.getImageData(0, 0, c.width, c.height).data;
+        const seen = new Set();
+        for (let i = 0; i < px.length; i += 4 * 97) seen.add(`${px[i]},${px[i + 1]},${px[i + 2]},${px[i + 3]}`);
+        distinctPixels = seen.size;
+    }
+    check('thumbnail-is-a-real-image',
+        loaded && img.naturalWidth === 320 && distinctPixels > 1,
+        `loaded=${loaded} size=${img.naturalWidth}x${img.naturalHeight} distinctSampledPixels=${distinctPixels}`);
+
+    // 8b. The stack is bounded, so a long session cannot grow it (and the saved file) forever.
+    //     Arrow-key nudges are the cheapest action that saves state.
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    for (let i = 0; i < 260; i++) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    }
+    byId('btn-save').click();
+    const capped = JSON.parse(await lastBlobText());
+    check('history-stack-is-bounded', capped.undoStack.length === 200,
+        `undoStack=${capped.undoStack.length} after 260+ actions (cap 200)`);
+
+    // Undo must still work against a stack that has been trimmed.
+    const beforeUndo = await exportSignature();
+    byId('btn-undo').click();
+    const afterUndo = await exportSignature();
+    check('undo-works-on-trimmed-stack', beforeUndo && afterUndo && beforeUndo.bounds !== afterUndo.bounds,
+        `before "${fmt(beforeUndo)}" after "${fmt(afterUndo)}"`);
+
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }
 
