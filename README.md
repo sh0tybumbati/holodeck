@@ -25,4 +25,15 @@ node test/run-regression.mjs
 Serves the project locally, drives it in a headless Chromium-family browser through the real
 toolbar buttons, and asserts on the exported STL and the saved `.holo` payload. Needs a browser
 binary (brave/chromium/chrome) and network access for the CDN scripts; no npm dependencies.
-Covers grouping, the undo/save round-trip for groups and hardware, and STL export contents.
+Covers grouping, the undo/save round-trip for groups and hardware, STL export contents, the
+bill of materials, GPU resource release, and variable-edit cost.
+
+```
+node test/measure-layout.mjs            # narrow screens
+node test/measure-layout.mjs 1440 900   # desktop
+node test/measure-layout.mjs 500 800 touch
+```
+
+Reports where every panel lands at a given viewport and fails if any two overlap or anything
+runs off-screen. Every panel is absolutely positioned, so a CSS change can stack two of them
+without any visible error.
