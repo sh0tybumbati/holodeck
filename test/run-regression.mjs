@@ -76,6 +76,16 @@ const server = createServer(async (req, res) => {
     }
 });
 
+// Parse the harness before spending a browser run on it. A syntax error there means the
+// module never executes, which otherwise surfaces only as an unexplained timeout.
+const harnessSource = await readFile(join(ROOT, 'test', 'browser-harness.js'), 'utf8');
+try {
+    new Function(harnessSource);
+} catch (err) {
+    console.error('test/browser-harness.js does not parse:\n  ' + err.message);
+    process.exit(1);
+}
+
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const port = server.address().port;
 
@@ -93,7 +103,7 @@ server.close();
 
 if (raw === null) {
     console.error(`Harness did not report within ${RUN_TIMEOUT_MS / 1000}s.`);
-    console.error('Check that the browser can reach the CDN scripts the page loads.');
+    console.error('Either it threw while loading, or the browser could not reach the CDN scripts.');
     process.exit(1);
 }
 
