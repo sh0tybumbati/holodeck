@@ -7,11 +7,14 @@
 // Assertions compare the exported STL, using two signals with different strengths:
 //   * vertex bounds  - exact. This is what catches geometry coming back in the wrong place;
 //                      a facet count cannot see a translation.
-//   * facet count    - exact for primitives and single groups, tolerant for nested groups.
-//                      Re-evaluating a group that is itself an input to another CSG runs the
-//                      BSP over float-shifted vertices, so coplanar splits get classified
-//                      differently and the tessellation drifts by ~0.2% while the solid and
-//                      its bounds stay identical. Measured across repeated runs.
+//   * facet count    - exact for primitives and single groups. NOT a stable property for a
+//                      nested group: re-evaluating a group that is itself an input to another
+//                      CSG runs the BSP over float-shifted vertices, so coplanar splits get
+//                      classified differently. Observed drift across runs is 0 to 2% (the
+//                      shapes are placed randomly, so each run tessellates differently) while
+//                      the bounds stay identical every time. Nested checks therefore assert
+//                      bounds exactly and keep only a loose facet guard against gross
+//                      corruption, such as a group restoring as an empty mesh.
 
 const out = document.createElement('pre');
 out.id = 'HOLODECK_RESULT';
@@ -73,8 +76,9 @@ async function exportSignature() {
 const fmt = sig => (sig ? `facets=${sig.facets} bounds=${sig.bounds}` : 'nothing-to-export');
 const samePlace = (a, b) => !!a && !!b && a.bounds === b.bounds;
 const sameMesh = (a, b) => samePlace(a, b) && a.facets === b.facets;
-// Tolerant form, for comparisons that re-run a nested CSG. See the header note.
-const sameSolid = (a, b) => samePlace(a, b) && Math.abs(a.facets - b.facets) <= Math.max(2, b.facets * 0.01);
+// For comparisons that re-run a nested CSG: exact placement, plus a loose sanity bound on
+// tessellation. The 10% is a corruption guard, not a precision claim — see the header note.
+const sameSolid = (a, b) => samePlace(a, b) && Math.abs(a.facets - b.facets) <= Math.max(12, b.facets * 0.1);
 
 async function saveAndParse() {
     byId('btn-save').click();
