@@ -232,13 +232,19 @@ async function run() {
         `parts=${parts.options.length} colours=${partColours.join(',')}`);
 
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+}
 
+// Report back to the runner's own server rather than leaving the results in the DOM for it
+// to scrape: the run does several megabyte-scale STL exports whose blob reads are real async
+// work, and racing that against a fixed browser time budget made the suite flake.
+function report() {
     out.textContent = JSON.stringify(results, null, 1);
+    fetch('/__results', { method: 'POST', body: out.textContent }).catch(() => {});
 }
 
 setTimeout(() => {
-    run().catch(err => {
+    run().then(report).catch(err => {
         results.push({ name: 'harness-crashed', pass: false, detail: String(err && err.stack || err) });
-        out.textContent = JSON.stringify(results, null, 1);
+        report();
     });
 }, 3000);

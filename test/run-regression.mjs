@@ -6,6 +6,10 @@
 // Serves the project on a local port, loads it in a headless Chromium-family browser with
 // test/browser-harness.js injected, and asserts on what the harness reports. No npm deps.
 // Needs a browser binary (brave/chromium/chrome) and network access for the CDN scripts.
+//
+// The harness POSTs its results back to /__results when it finishes, so the run is bounded by
+// the harness actually completing rather than by a fixed browser time budget — the exports it
+// reads back are megabyte-scale and racing them against a budget made the suite flake.
 
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
@@ -15,6 +19,7 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = normalize(join(fileURLToPath(import.meta.url), '..', '..'));
+const RUN_TIMEOUT_MS = 180000;
 
 const BROWSERS = [
     '/usr/bin/brave', '/usr/bin/brave-browser', '/usr/bin/chromium',
@@ -35,66 +40,60 @@ function findBrowser() {
     return found;
 }
 
-async function serve() {
-    const server = createServer(async (req, res) => {
-        const path = decodeURIComponent(req.url.split('?')[0]);
-        const file = join(ROOT, path === '/' ? 'index.html' : path);
-        if (!file.startsWith(ROOT)) { res.writeHead(403).end(); return; }
-        try {
-            let body = await readFile(file);
-            // Inject the harness without touching the shipped index.html, and mark the CDN
-            // scripts crossorigin so window.onerror reports real messages instead of the
-            // opaque "Script error." — otherwise the harness cannot tell its own synthetic
-            // pointer-event noise from a genuine app failure.
-            if (file.endsWith('index.html')) {
-                body = body.toString()
-                    .replace(/<script src="(https:\/\/[^"]+)"><\/script>/g,
-                        '<script crossorigin="anonymous" src="$1"></script>')
-                    .replace(/<\/body>/,
-                        '<script type="module" src="test/browser-harness.js"></script>\n</body>');
-            }
-            res.writeHead(200, { 'Content-Type': MIME[extname(file)] || 'application/octet-stream' });
-            res.end(body);
-        } catch {
-            res.writeHead(404).end('not found');
+let resolveResults;
+const resultsPromise = new Promise(resolve => { resolveResults = resolve; });
+
+const server = createServer(async (req, res) => {
+    const path = decodeURIComponent(req.url.split('?')[0]);
+
+    if (req.method === 'POST' && path === '/__results') {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        res.writeHead(204).end();
+        resolveResults(Buffer.concat(chunks).toString());
+        return;
+    }
+
+    const file = join(ROOT, path === '/' ? 'index.html' : path);
+    if (!file.startsWith(ROOT)) { res.writeHead(403).end(); return; }
+    try {
+        let body = await readFile(file);
+        // Inject the harness without touching the shipped index.html, and mark the CDN
+        // scripts crossorigin so window.onerror reports real messages instead of the
+        // opaque "Script error." — otherwise the harness cannot tell its own synthetic
+        // pointer-event noise from a genuine app failure.
+        if (file.endsWith('index.html')) {
+            body = body.toString()
+                .replace(/<script src="(https:\/\/[^"]+)"><\/script>/g,
+                    '<script crossorigin="anonymous" src="$1"></script>')
+                .replace(/<\/body>/,
+                    '<script type="module" src="test/browser-harness.js"></script>\n</body>');
         }
-    });
-    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    return { server, port: server.address().port };
-}
+        res.writeHead(200, { 'Content-Type': MIME[extname(file)] || 'application/octet-stream' });
+        res.end(body);
+    } catch {
+        res.writeHead(404).end('not found');
+    }
+});
 
-function dumpDom(browser, url) {
-    return new Promise((resolve, reject) => {
-        const child = spawn(browser, [
-            '--headless=new', '--disable-gpu', '--use-angle=swiftshader',
-            '--enable-unsafe-swiftshader', '--no-sandbox',
-            '--virtual-time-budget=30000', '--dump-dom', url
-        ], { stdio: ['ignore', 'pipe', 'ignore'] });
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const port = server.address().port;
 
-        let dom = '';
-        child.stdout.on('data', d => { dom += d; });
-        child.on('error', reject);
-        child.on('close', () => resolve(dom));
+const browser = spawn(findBrowser(), [
+    '--headless=new', '--disable-gpu', '--use-angle=swiftshader',
+    '--enable-unsafe-swiftshader', '--no-sandbox',
+    `http://127.0.0.1:${port}/index.html`
+], { stdio: 'ignore' });
 
-        setTimeout(() => { child.kill('SIGKILL'); reject(new Error('browser timed out')); }, 120000);
-    });
-}
+const timeout = new Promise(resolve => setTimeout(() => resolve(null), RUN_TIMEOUT_MS));
+const raw = await Promise.race([resultsPromise, timeout]);
 
-const { server, port } = await serve();
-const dom = await dumpDom(findBrowser(), `http://127.0.0.1:${port}/index.html`);
+browser.kill('SIGKILL');
 server.close();
 
-const match = dom.match(/<pre id="HOLODECK_RESULT">([\s\S]*?)<\/pre>/);
-if (!match) {
-    console.error('Harness produced no results — the page probably failed to load.');
-    process.exit(1);
-}
-
-const decode = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-const raw = decode(match[1]).trim();
-if (!raw) {
-    console.error('Harness started but never finished — it was killed mid-run.');
-    console.error('Most likely an uncaught error left the app in a state the harness could not drive.');
+if (raw === null) {
+    console.error(`Harness did not report within ${RUN_TIMEOUT_MS / 1000}s.`);
+    console.error('Check that the browser can reach the CDN scripts the page loads.');
     process.exit(1);
 }
 
