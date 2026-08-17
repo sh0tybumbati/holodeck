@@ -318,6 +318,45 @@ async function run() {
     check('bom-drops-contents-of-deleted-group', bomRows() === 1 && bomTotal() === '$0.00',
         `grouped: ${groupedBom} -> after deleting group: ${bomRows()} rows ${bomTotal()}`);
 
+    // 9c. A pasted part is a real part, so it goes on the bill — and its row must be linked
+    //     to the new mesh, not the one it was copied from.
+    const pressKey = (key, opts = {}) =>
+        window.dispatchEvent(new KeyboardEvent('keydown', Object.assign({ key, bubbles: true }, opts)));
+
+    byId('add-motor').click();
+    const oneMotor = `${bomRows()} rows ${bomTotal()}`;
+    pressKey('c', { ctrlKey: true });
+    pressKey('v', { ctrlKey: true });
+    check('bom-bills-pasted-hardware', bomRows() === 3 && bomTotal() === '$24.00',
+        `one motor: ${oneMotor} -> after paste: ${bomRows()} rows ${bomTotal()}`);
+
+    byId('delete-selected').click(); // paste leaves only the copy selected
+    check('bom-drops-deleted-paste', bomRows() === 2 && bomTotal() === '$12.00',
+        `${bomRows()} rows ${bomTotal()}`);
+
+    // 9d. Pasting a group bills the parts inside it.
+    document.querySelector('[data-shape="cube"]').click();
+    boxSelectAll();
+    byId('group-shapes').click();
+    const groupedMotor = `${bomRows()} rows ${bomTotal()}`;
+    pressKey('c', { ctrlKey: true });
+    pressKey('v', { ctrlKey: true });
+    check('bom-bills-parts-of-pasted-group', bomRows() === 3 && bomTotal() === '$24.00',
+        `grouped: ${groupedMotor} -> after paste: ${bomRows()} rows ${bomTotal()}`);
+
+    // 9e. One copy, two pastes: the clipboard entry has no row of its own, so cloning it must
+    //     keep the template rather than look one up and find nothing.
+    pressKey('v', { ctrlKey: true });
+    check('bom-bills-every-paste', bomRows() === 4 && bomTotal() === '$36.00',
+        `${bomRows()} rows ${bomTotal()}`);
+
+    // 9f. Cut deletes the source — and its row — between capturing the template and pasting.
+    pressKey('x', { ctrlKey: true });
+    const afterCut = `${bomRows()} rows ${bomTotal()}`;
+    pressKey('v', { ctrlKey: true });
+    check('bom-survives-cut-and-paste', bomRows() === 4 && bomTotal() === '$36.00',
+        `after cut: ${afterCut} -> after paste: ${bomRows()} rows ${bomTotal()}`);
+
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }
 

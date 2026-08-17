@@ -1170,7 +1170,19 @@ function setupToolbar() {
             if (origNode.userData.baseSize) cloneNode.userData.baseSize = { ...origNode.userData.baseSize };
             if (origNode.userData.bindings) cloneNode.userData.bindings = { ...origNode.userData.bindings };
             if (origNode.userData.originalGeometry) cloneNode.userData.originalGeometry = origNode.userData.originalGeometry;
-            
+
+            // Copy time is the last moment the source's BOM row can be found: the clone gets a
+            // fresh uuid, so the link is by uuid only until now. Carry the row's contents so
+            // paste can bill the copy. Cloning a clipboard entry finds no row and keeps the
+            // template it already holds.
+            const sourceRow = bomItems.find(item => item.meshId === origNode.uuid);
+            if (sourceRow) {
+                cloneNode.userData.bomTemplate = {
+                    name: sourceRow.name, price: sourceRow.price, quantity: sourceRow.quantity
+                };
+            }
+
+
             if (origNode.userData.isComposite && origNode.userData.groupChildren) {
                 cloneNode.userData.groupChildren = origNode.userData.groupChildren.map(origChild => {
                     const index = origNode.children.indexOf(origChild);
@@ -1249,8 +1261,10 @@ function setupToolbar() {
                             
                             scene.add(clone);
                             shapes.push(clone);
+                            addBomRowsForPaste(clone);
                             selectShape(clone, { ctrlKey: true });
                         });
+                        renderBOM();
                         historyManager.saveState();
                         updateStatus(clipboard.length + ' shape(s) pasted.');
                     }
@@ -2373,6 +2387,23 @@ function collectLiveShapeIds(nodes = shapes, into = new Set()) {
         if (node.userData.groupChildren) collectLiveShapeIds(node.userData.groupChildren, into);
     });
     return into;
+}
+
+// Bills a pasted mesh, and every part inside it if it is a group, from the template
+// deepCloneShape carried over at copy time.
+function addBomRowsForPaste(node) {
+    const template = node.userData.bomTemplate;
+    if (template) {
+        bomItems.push({
+            id: node.uuid,
+            name: template.name,
+            price: template.price,
+            quantity: template.quantity || 1,
+            invisible: false,
+            meshId: node.uuid
+        });
+    }
+    if (node.userData.groupChildren) node.userData.groupChildren.forEach(addBomRowsForPaste);
 }
 
 // Drops BOM rows whose mesh is gone. Rows added by hand carry no meshId and are never
