@@ -400,10 +400,13 @@ function renderVariables() {
         
         valInp.addEventListener('input', (e) => {
             window.holodeckVariables[key] = e.target.value;
-            applyVariablesToShapes();
+            scheduleVariableApply();
         });
-        
-        valInp.addEventListener('change', () => historyManager.saveState());
+
+        valInp.addEventListener('change', () => {
+            flushVariableApply();
+            historyManager.saveState();
+        });
         
         delBtn.addEventListener('click', () => {
             delete window.holodeckVariables[key];
@@ -443,14 +446,31 @@ function updateBindingsRename(shape, oldName, newName) {
     if (selectedShape === shape) selectPropertyNode(currentPropertyNode); // Refresh UI
 }
 
+// Applying a variable re-cuts every group whose parts are bound to it, which is far too
+// expensive to do on each keystroke. Coalesce a burst of typing into one apply, and flush
+// the pending one before anything that has to see the result (a save, mainly).
+let variableApplyTimer = null;
+const VARIABLE_APPLY_DELAY_MS = 120;
+
+function scheduleVariableApply() {
+    clearTimeout(variableApplyTimer);
+    variableApplyTimer = setTimeout(() => {
+        variableApplyTimer = null;
+        applyVariablesToShapes();
+    }, VARIABLE_APPLY_DELAY_MS);
+}
+
+function flushVariableApply() {
+    if (variableApplyTimer === null) return;
+    clearTimeout(variableApplyTimer);
+    variableApplyTimer = null;
+    applyVariablesToShapes();
+}
+
 function applyVariablesToShapes() {
-    let needsRebuild = false;
     shapes.forEach(shape => {
-        if (applyBindingsToNode(shape)) {
-            if (shape.userData.isComposite) {
-                needsRebuild = true;
-                rebuildCSG(shape);
-            }
+        if (applyBindingsToNode(shape) && shape.userData.isComposite) {
+            rebuildCSG(shape);
         }
     });
     if (currentPropertyNode) selectPropertyNode(currentPropertyNode);
@@ -1197,11 +1217,17 @@ function setupToolbar() {
         
         cloneUserData(s, clone);
         
-        function cloneMaterials(mesh) {
+        // Object3D.clone() shares geometry with the source. The clipboard has to outlive its
+        // source — cut deletes it, and deleting disposes — so give the clone its own copy.
+        function cloneGeometryAndMaterial(mesh) {
             if (mesh.material) mesh.material = mesh.material.clone();
-            mesh.children.forEach(cloneMaterials);
+            if (mesh.geometry) {
+                mesh.geometry = mesh.geometry.clone();
+                if (mesh.userData.originalGeometry) mesh.userData.originalGeometry = mesh.geometry;
+            }
+            mesh.children.forEach(cloneGeometryAndMaterial);
         }
-        cloneMaterials(clone);
+        cloneGeometryAndMaterial(clone);
         
         return clone;
     }
@@ -2369,9 +2395,31 @@ function exportSTL() {
     updateStatus(`Exported ${exported} object(s) to STL.`);
 }
 
+// Frees the GPU resources behind a mesh and everything under it. Nothing else may still be
+// pointing at these: the properties preview borrows originalGeometry, so callers drop the
+// selection (which clears the preview) before disposing.
+function disposeShape(node) {
+    if (node.geometry) {
+        if (node.userData.originalGeometry && node.userData.originalGeometry !== node.geometry) {
+            node.userData.originalGeometry.dispose();
+        }
+        node.geometry.dispose();
+    }
+    if (node.material) {
+        (Array.isArray(node.material) ? node.material : [node.material]).forEach(m => {
+            if (m.map) m.map.dispose();
+            m.dispose();
+        });
+    }
+    node.children.forEach(disposeShape);
+}
+
 function clearAll(isRestoring = false) {
-    transformControl.detach(); shapes.forEach(shape => scene.remove(shape));
-    shapes = []; selectedShape = null; selectedShapes = []; updateSelectionEffects(); 
+    transformControl.detach();
+    const removed = shapes.slice();
+    removed.forEach(shape => scene.remove(shape));
+    shapes = []; selectedShape = null; selectedShapes = []; updateSelectionEffects();
+    removed.forEach(disposeShape);
     document.getElementById('properties-panel').classList.remove('active');
     if (!isRestoring) {
         historyManager.saveState();
@@ -2418,13 +2466,15 @@ function reconcileBOM() {
 function deleteSelected() {
     if (selectedShapes.length === 0) return;
     transformControl.detach();
-    selectedShapes.forEach(shape => {
+    const removed = selectedShapes.slice();
+    removed.forEach(shape => {
         scene.remove(shape);
         shapes = shapes.filter(s => s !== shape);
     });
     selectedShapes = [];
     selectedShape = null;
     updateSelectionEffects();
+    removed.forEach(disposeShape);
     reconcileBOM();
     historyManager.saveState();
     updateStatus('Deleted selected shapes');
