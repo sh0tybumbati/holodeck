@@ -12,7 +12,7 @@
 // reads back are megabyte-scale and racing them against a budget made the suite flake.
 
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
@@ -63,9 +63,23 @@ const server = createServer(async (req, res) => {
         // opaque "Script error." — otherwise the harness cannot tell its own synthetic
         // pointer-event noise from a genuine app failure.
         if (file.endsWith('index.html')) {
+            // Records the renderers the app creates so the harness can read
+            // renderer.info.memory, which is how GPU resource leaks become measurable.
+            // Test-only: the app itself keeps no global handle on its renderer.
+            const instrument = '<script>(function () {\n'
+                + '  var Real = THREE.WebGLRenderer;\n'
+                + '  window.__renderers = [];\n'
+                + '  THREE.WebGLRenderer = function () {\n'
+                + '    var r = new Real(...arguments);\n'
+                + '    window.__renderers.push(r);\n'
+                + '    return r;\n'
+                + '  };\n'
+                + '}());</script>\n';
+
             body = body.toString()
                 .replace(/<script src="(https:\/\/[^"]+)"><\/script>/g,
                     '<script crossorigin="anonymous" src="$1"></script>')
+                .replace(/<script type="module" src="js\/app\.js/, instrument + '<script type="module" src="js/app.js')
                 .replace(/<\/body>/,
                     '<script type="module" src="test/browser-harness.js"></script>\n</body>');
         }
@@ -77,12 +91,14 @@ const server = createServer(async (req, res) => {
 });
 
 // Parse the harness before spending a browser run on it. A syntax error there means the
-// module never executes, which otherwise surfaces only as an unexplained timeout.
+// module never executes, which otherwise surfaces only as an unexplained timeout. Checked
+// with module semantics, since that is how the browser loads it.
 const harnessSource = await readFile(join(ROOT, 'test', 'browser-harness.js'), 'utf8');
-try {
-    new Function(harnessSource);
-} catch (err) {
-    console.error('test/browser-harness.js does not parse:\n  ' + err.message);
+const parseCheck = spawnSync(process.execPath, ['--check', '--input-type=module', '-'],
+    { input: harnessSource, encoding: 'utf8' });
+if (/SyntaxError/.test(parseCheck.stderr || '')) {
+    console.error('test/browser-harness.js does not parse:\n'
+        + parseCheck.stderr.replace(/\[stdin\]/g, 'test/browser-harness.js').trimEnd());
     process.exit(1);
 }
 

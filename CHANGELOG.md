@@ -32,8 +32,6 @@ All notable changes to this project will be documented in this file.
 - **Gizmo Usability**: Doubled the click-radius of the Align and Distribute gizmo handles (from 0.35 to 0.7).
 - **Gizmo Raycasting Priority**: Optimized the Three.js raycaster to strictly prioritize gizmo handles over the bounding-box wireframe, completely resolving click-occlusion issues.
 - **Asset Caching**: Added cache-busting version strings (`?v=2`) to HTML script and link tags to ensure clients receive immediate updates.
-
-### Changed
 - **Project File Format (2.1)**: A `.holo` file now carries a single 320px thumbnail at the top level instead of one full-resolution capture inside every history state. Files written by earlier versions still load, and the dashboard falls back to their per-state thumbnail.
 
 ### Removed

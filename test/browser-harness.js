@@ -278,8 +278,11 @@ async function run() {
     //     Arrow-key nudges are the cheapest action that saves state.
     clearScene();
     document.querySelector('[data-shape="cube"]').click();
+    // Alternate directions so the cube stays in frame. clearScene() selects by dragging a box
+    // over the viewport, so anything nudged off-screen would survive it and pollute later
+    // tests — 260 nudges in one direction put it 26 units up and out of view.
     for (let i = 0; i < 260; i++) {
-        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: i % 2 ? 'ArrowDown' : 'ArrowUp', bubbles: true }));
     }
     byId('btn-save').click();
     const capped = JSON.parse(await lastBlobText());
@@ -356,6 +359,70 @@ async function run() {
     pressKey('v', { ctrlKey: true });
     check('bom-survives-cut-and-paste', bomRows() === 4 && bomTotal() === '$36.00',
         `after cut: ${afterCut} -> after paste: ${bomRows()} rows ${bomTotal()}`);
+
+    // 10. Typing in a variable must not re-cut every group once per keystroke. Bind a group's
+    //     sub-part to a variable, then type a value one character at a time and measure what
+    //     that costs synchronously.
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    document.querySelector('[data-shape="sphere"]').click();
+    boxSelectAll();
+    byId('group-shapes').click();
+
+    byId('add-var-btn').click();
+    const varInputs = document.querySelectorAll('#variables-list input');
+    const varName = varInputs[varInputs.length - 2].value;
+    const varField = varInputs[varInputs.length - 1];
+
+    const partPicker = byId('obj-part');
+    partPicker.value = partPicker.options[1].value;
+    partPicker.dispatchEvent(new Event('change', { bubbles: true }));
+    const widthField = byId('obj-w');
+    widthField.value = varName; // bind this part's width to the variable
+    widthField.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const typed = '3.75';
+    const typingStart = performance.now();
+    for (let i = 1; i <= typed.length; i++) {
+        varField.value = typed.slice(0, i);
+        varField.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    const typingMs = Math.round(performance.now() - typingStart);
+    check('typing-a-variable-does-not-rebuild-per-keystroke', typingMs < 60,
+        `${typingMs}ms for ${typed.length} keystrokes with a group bound`);
+
+    // ...and the value must still land once typing stops.
+    await new Promise(resolve => setTimeout(resolve, 400));
+    partPicker.value = partPicker.options[1].value;
+    partPicker.dispatchEvent(new Event('change', { bubbles: true }));
+    check('variable-value-still-applies', byId('obj-w').value === varName,
+        `bound expression shown as "${byId('obj-w').value}", variable=${varName}=${varField.value}`);
+
+    // 11. Deleting shapes must release their GPU resources. The runner records the renderers
+    //     the app creates so info.memory is readable here; the main one is the first.
+    const mainRenderer = (window.__renderers || [])[0];
+    clearScene();
+    await new Promise(requestAnimationFrame);
+    const baseline = mainRenderer.info.memory.geometries;
+
+    for (let i = 0; i < 20; i++) document.querySelector('[data-shape="cube"]').click();
+    await new Promise(requestAnimationFrame);
+    const withCubes = mainRenderer.info.memory.geometries;
+
+    clearScene();
+    await new Promise(requestAnimationFrame);
+    const afterDelete = mainRenderer.info.memory.geometries;
+
+    check('deleting-shapes-releases-geometries', afterDelete <= baseline,
+        `baseline=${baseline} with20cubes=${withCubes} afterDelete=${afterDelete}`);
+
+    // Cut keeps a clone on the clipboard that must survive its source being disposed.
+    document.querySelector('[data-shape="cube"]').click();
+    pressKey('x', { ctrlKey: true });
+    pressKey('v', { ctrlKey: true });
+    const pastedAfterCut = await exportSignature();
+    check('cut-then-paste-keeps-its-geometry', pastedAfterCut && pastedAfterCut.facets === 12,
+        fmt(pastedAfterCut));
 
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }
