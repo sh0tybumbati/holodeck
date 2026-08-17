@@ -293,6 +293,31 @@ async function run() {
     check('undo-works-on-trimmed-stack', beforeUndo && afterUndo && beforeUndo.bounds !== afterUndo.bounds,
         `before "${fmt(beforeUndo)}" after "${fmt(afterUndo)}"`);
 
+    // 9. BOM rows follow the meshes they were created for.
+    const bomRows = () => byId('bom-list').children.length;
+    const bomTotal = () => byId('bom-total').textContent.trim();
+
+    clearScene();
+    byId('add-invisible-btn').click(); // a hand-added row, must survive everything below
+    byId('add-motor').click();
+    const stocked = `${bomRows()} rows ${bomTotal()}`;
+    byId('delete-selected').click(); // the motor is selected right after being added
+    check('bom-drops-deleted-hardware', bomRows() === 1 && bomTotal() === '$0.00',
+        `with motor: ${stocked} -> after delete: ${bomRows()} rows ${bomTotal()}`);
+
+    // 9b. Grouping moves a part out of `shapes` but it is still in the assembly, so its row
+    //     must stay. Deleting the group takes the row with it.
+    byId('add-motor').click();
+    document.querySelector('[data-shape="cube"]').click();
+    boxSelectAll();
+    byId('group-shapes').click();
+    const groupedBom = `${bomRows()} rows ${bomTotal()}`;
+    check('bom-keeps-grouped-hardware', bomRows() === 2 && bomTotal() === '$12.00', groupedBom);
+
+    byId('delete-selected').click(); // the group is selected right after grouping
+    check('bom-drops-contents-of-deleted-group', bomRows() === 1 && bomTotal() === '$0.00',
+        `grouped: ${groupedBom} -> after deleting group: ${bomRows()} rows ${bomTotal()}`);
+
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }
 

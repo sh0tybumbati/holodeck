@@ -2365,6 +2365,25 @@ function clearAll(isRestoring = false) {
     }
 }
 
+// Every uuid still present in the scene, following groups: a part that was grouped is no
+// longer in `shapes`, but it is still in the assembly and still on the bill.
+function collectLiveShapeIds(nodes = shapes, into = new Set()) {
+    nodes.forEach(node => {
+        into.add(node.uuid);
+        if (node.userData.groupChildren) collectLiveShapeIds(node.userData.groupChildren, into);
+    });
+    return into;
+}
+
+// Drops BOM rows whose mesh is gone. Rows added by hand carry no meshId and are never
+// touched, so a custom line item survives whatever happens to the geometry.
+function reconcileBOM() {
+    const live = collectLiveShapeIds();
+    const before = bomItems.length;
+    bomItems = bomItems.filter(item => !item.meshId || live.has(item.meshId));
+    if (bomItems.length !== before) renderBOM();
+}
+
 function deleteSelected() {
     if (selectedShapes.length === 0) return;
     transformControl.detach();
@@ -2375,6 +2394,7 @@ function deleteSelected() {
     selectedShapes = [];
     selectedShape = null;
     updateSelectionEffects();
+    reconcileBOM();
     historyManager.saveState();
     updateStatus('Deleted selected shapes');
 }
