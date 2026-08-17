@@ -36,7 +36,11 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - **Project File Format (2.1)**: A `.holo` file now carries a single 320px thumbnail at the top level instead of one full-resolution capture inside every history state. Files written by earlier versions still load, and the dashboard falls back to their per-state thumbnail.
 
+### Removed
+- **Scaffold CLI**: Deleted `main.go`, a cobra "hello world" left over from the original project scaffold. It declared `package main`/`func main()` in the same directory as `server.go`, so the Go build could never succeed. The module is renamed from `hello` to `holodeck` and no longer requires cobra; `server.go` uses only the standard library, so `go.sum` is gone too.
+
 ### Fixed
+- **Dashboard Card Rendering**: Project cards built their markup by interpolating values straight out of the `.holo` file — the project name, category, status and thumbnail URL — into `innerHTML`. Cards are now built as DOM nodes with text set via `textContent`, and a thumbnail is only used if it is a `data:image/` URL.
 - **Bill of Materials on Paste**: Pasting a part produced a second physical object that was never billed. A copy now carries its source's line item and is added to the bill on paste, including every part inside a pasted group, and for each paste of a single copy.
 - **Bill of Materials Reconciliation**: Deleting an object left its row and its cost on the bill — deleting a stepper still charged $12.00. Rows created for a mesh now disappear with it, including when the mesh is inside a deleted group. Rows added by hand with *Add Custom Item* are never removed, and grouping a part keeps its row, since a grouped part is still in the assembly.
 - **Save Size & Per-Action Cost**: Every `saveState()` — every shape added, every colour tweak, every arrow-key nudge — did a synchronous full-canvas render plus `toDataURL`, and wrote the result into the history state. Measured at 35.9 KB per state, so an eight-cube project saved an 897 KB file that was ~97% thumbnail. State is now 1.4 KB, the thumbnail is captured once at save time, and the undo stack is capped at 200 states.

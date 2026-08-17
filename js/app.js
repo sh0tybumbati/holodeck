@@ -2718,6 +2718,46 @@ function deserializeScene(state) {
     document.getElementById('properties-panel').classList.remove('active');
 }
 
+// Builds a dashboard card as DOM nodes. Everything here comes out of a .holo file on disk,
+// so none of it may be parsed as HTML: a project name, a category or a thumbnail URL is
+// data, not markup. Text goes in via textContent, and the thumbnail must be a data: image.
+function buildProjectCard({ title, thumbnail, status, version, category, cost }) {
+    const card = document.createElement('div');
+    card.className = 'project-card';
+
+    if (/^data:image\//.test(thumbnail || '')) {
+        const img = document.createElement('img');
+        img.src = thumbnail;
+        img.alt = 'Thumbnail';
+        card.appendChild(img);
+    } else {
+        const placeholder = document.createElement('div');
+        placeholder.style.cssText = 'width:100%; height:150px; background:#222;';
+        card.appendChild(placeholder);
+    }
+
+    const heading = document.createElement('h3');
+    heading.textContent = title;
+    card.appendChild(heading);
+
+    const addMetaRow = (left, right) => {
+        const row = document.createElement('div');
+        row.className = 'meta';
+        const leftEl = document.createElement('span');
+        leftEl.textContent = left;
+        const rightEl = document.createElement('span');
+        rightEl.textContent = right;
+        row.appendChild(leftEl);
+        row.appendChild(rightEl);
+        card.appendChild(row);
+    };
+
+    addMetaRow(status, `v${version}`);
+    addMetaRow(category, `$${cost.toFixed(2)}`);
+
+    return card;
+}
+
 // Local Project Dashboard Logic
 const btnDashboard = document.getElementById('btn-dashboard');
 const dashboardOverlay = document.getElementById('dashboard-overlay');
@@ -2761,20 +2801,14 @@ if (btnSelectDir) {
                             // every history state.
                             const thumbnail = data.thumbnail || state.thumbnail || '';
                             
-                            const card = document.createElement('div');
-                            card.className = 'project-card';
-                            card.innerHTML = `
-                                ${thumbnail ? `<img src="${thumbnail}" alt="Thumbnail">` : '<div style="width:100%; height:150px; background:#222;"></div>'}
-                                <h3>${entry.name.replace('.holo', '')}</h3>
-                                <div class="meta">
-                                    <span>${meta.status || 'Draft'}</span>
-                                    <span>v${meta.version || '1.0'}</span>
-                                </div>
-                                <div class="meta">
-                                    <span>${meta.category || 'Uncategorized'}</span>
-                                    <span>$${cost.toFixed(2)}</span>
-                                </div>
-                            `;
+                            const card = buildProjectCard({
+                                title: entry.name.replace('.holo', ''),
+                                thumbnail,
+                                status: meta.status || 'Draft',
+                                version: meta.version || '1.0',
+                                category: meta.category || 'Uncategorized',
+                                cost
+                            });
                             card.addEventListener('click', () => {
                                 historyManager.undoStack = data.undoStack;
                                 historyManager.redoStack = data.redoStack || [];
