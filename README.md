@@ -15,3 +15,14 @@ Holodeck is a web-based, 3D CAD modeling and design tool built with Three.js. It
 
 ## Usage
 Simply open `index.html` in a modern web browser to start using Holodeck. No build step or local server is strictly required for the core application, though a local server is recommended for loading external assets if added in the future.
+
+## Tests
+
+```
+node test/run-regression.mjs
+```
+
+Serves the project locally, drives it in a headless Chromium-family browser through the real
+toolbar buttons, and asserts on the exported STL and the saved `.holo` payload. Needs a browser
+binary (brave/chromium/chrome) and network access for the CDN scripts; no npm dependencies.
+Covers grouping, the undo/save round-trip for groups and hardware, and STL export contents.

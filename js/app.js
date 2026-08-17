@@ -521,10 +521,11 @@ function updateDimensions() {
 
 function getSubFeatureBoxes(node, targetMatrix) {
     const boxes = [];
-    if (node.userData.isComposite) {
-        boxes.push(...getSubFeatureBoxes(node.userData.left, targetMatrix));
-        boxes.push(...getSubFeatureBoxes(node.userData.right, targetMatrix));
-    } else {
+    if (node.userData.isComposite && node.userData.groupChildren) {
+        node.userData.groupChildren.forEach(child => {
+            boxes.push(...getSubFeatureBoxes(child, targetMatrix));
+        });
+    } else if (node.geometry) {
         if (!node.geometry.boundingBox) node.geometry.computeBoundingBox();
         const min = node.geometry.boundingBox.min.clone().applyMatrix4(node.matrixWorld).applyMatrix4(targetMatrix);
         const max = node.geometry.boundingBox.max.clone().applyMatrix4(node.matrixWorld).applyMatrix4(targetMatrix);
@@ -1310,6 +1311,15 @@ function setupToolbar() {
     });
 }
 
+// Unscaled size of a geometry, used as the divisor for the dimension inputs.
+// Never returns 0 on an axis: a flat geometry would make scale = dim / 0.
+function measureBaseSize(geometry) {
+    geometry.computeBoundingBox();
+    const sz = new THREE.Vector3();
+    geometry.boundingBox.getSize(sz);
+    return { x: sz.x || 1, y: sz.y || 1, z: sz.z || 1 };
+}
+
 function addShape(type) {
     let geometry;
     switch(type) {
@@ -1912,18 +1922,15 @@ function selectPropertyNode(node) {
     document.getElementById('obj-color').value = '#' + (Array.isArray(selectedShape.material) ? selectedShape.material[0].color : selectedShape.material.color).getHexString();
     document.getElementById('obj-transparent').checked = node.material.transparent;
     
-    const bindings = node.userData.bindings || {};
     let base = node.userData.baseSize;
     if (!base) {
-        if (!node.geometry.boundingBox) node.geometry.computeBoundingBox();
-        const sz = new THREE.Vector3(); node.geometry.boundingBox.getSize(sz);
-        base = { x: sz.x || 1, y: sz.y || 1, z: sz.z || 1 };
+        base = measureBaseSize(node.geometry);
+        node.userData.baseSize = base;
     }
-    
+
     const setInput = (id, axis) => {
         const input = document.getElementById(id);
-        const s = node;
-        input.value = (s.userData.bindings && s.userData.bindings[axis]) || (s.scale[axis] * s.userData.baseSize[axis]).toFixed(2);
+        input.value = (node.userData.bindings && node.userData.bindings[axis]) || (node.scale[axis] * base[axis]).toFixed(2);
     };
     setInput('obj-w', 'x'); setInput('obj-h', 'y'); setInput('obj-l', 'z');
     
@@ -2189,13 +2196,16 @@ function rebuildCSG(mesh) {
     try {
         const newMesh = evaluateGroup(mesh.userData.groupChildren);
         if (newMesh) {
-            const invMatrix = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
-            newMesh.geometry.applyMatrix4(invMatrix);
-            
+            // three-csg-ts evaluates from each mesh's *local* matrix, and rebuildCSG always
+            // runs with the children already parented to `mesh`, so the result is already in
+            // mesh-local space — re-basing it against matrixWorld would shift the group by
+            // -position on every rebuild. Only evaluateGroup's re-centring has to be undone.
+            newMesh.updateMatrix();
+            newMesh.geometry.applyMatrix4(newMesh.matrix);
+
             if (mesh.geometry) mesh.geometry.dispose();
             mesh.geometry = newMesh.geometry;
-            mesh.geometry.computeBoundingBox();
-            mesh.userData.baseSize = null;
+            mesh.userData.baseSize = measureBaseSize(mesh.geometry);
         }
     } catch (e) { console.error('CSG rebuild failed:', e); }
 }
@@ -2209,7 +2219,11 @@ function groupShapes() {
         const resultMesh = evaluateGroup(shapesToGroup);
         
         if (resultMesh) {
-            resultMesh.userData = { isComposite: true, isHole: false, groupChildren: shapesToGroup, bindings: {} };
+            resultMesh.userData = {
+                type: 'group', isComposite: true, isHole: false, isHardware: false,
+                groupChildren: shapesToGroup, bindings: {},
+                baseSize: measureBaseSize(resultMesh.geometry)
+            };
             resultMesh.uuid = THREE.MathUtils.generateUUID();
             resultMesh.name = "Group " + (shapes.length + 1);
             
@@ -2296,10 +2310,33 @@ function performDistribute(axis, valType) {
 }
 
 function exportSTL() {
+    // STLExporter traverses every Mesh it is handed and ignores .visible, so exporting the
+    // live scene ships the transform gizmo, the alignment handles, the wire preview and the
+    // hidden children CSG already consumed. Build a scene holding only the real solids.
+    const exportScene = new THREE.Scene();
+    let exported = 0;
+
+    shapes.forEach(shape => {
+        if (!shape.isMesh || !shape.geometry) return;
+        if (shape.userData.isHole) return; // a hole is a modelling aid, not a printable solid
+        shape.updateMatrixWorld(true);
+        const flat = new THREE.Mesh(shape.geometry, shape.material);
+        flat.applyMatrix4(shape.matrixWorld);
+        exportScene.add(flat);
+        exported++;
+    });
+
+    if (exported === 0) {
+        updateStatus('Nothing to export.');
+        return;
+    }
+
+    exportScene.updateMatrixWorld(true);
     const exporter = new THREE.STLExporter();
-    const blob = new Blob([exporter.parse(scene, { binary: false })], { type: 'text/plain' });
+    const blob = new Blob([exporter.parse(exportScene, { binary: false })], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = 'model.stl'; a.click(); URL.revokeObjectURL(url);
+    updateStatus(`Exported ${exported} object(s) to STL.`);
 }
 
 function clearAll(isRestoring = false) {
@@ -2431,6 +2468,7 @@ function updateToolbarButtons() {
 }
 
 function serializeShape(mesh) {
+    const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
     const data = {
         uuid: mesh.uuid,
         name: mesh.name,
@@ -2438,22 +2476,28 @@ function serializeShape(mesh) {
         quaternion: mesh.quaternion.toArray(),
         scale: mesh.scale.toArray(),
         material: {
-            color: Array.isArray(mesh.material) ? mesh.material[0].color.getHex() : mesh.material.color.getHex(),
-            transparent: Array.isArray(mesh.material) ? mesh.material[0].transparent : mesh.material.transparent,
-            opacity: Array.isArray(mesh.material) ? mesh.material[0].opacity : mesh.material.opacity
+            color: mat.color.getHex(),
+            transparent: mat.transparent,
+            opacity: mat.opacity,
+            roughness: mat.roughness,
+            metalness: mat.metalness
         },
         userData: {
             type: mesh.userData.type,
             bindings: mesh.userData.bindings ? { ...mesh.userData.bindings } : {},
-            isComposite: mesh.userData.isComposite,
-            baseSize: mesh.userData.baseSize ? { ...mesh.userData.baseSize } : null,
-            csgOp: mesh.userData.csgOp
+            isComposite: !!mesh.userData.isComposite,
+            isHole: !!mesh.userData.isHole,
+            isHardware: !!mesh.userData.isHardware,
+            hwProps: mesh.userData.hwProps ? { ...mesh.userData.hwProps } : null,
+            wirePoints: mesh.userData.wirePoints ? mesh.userData.wirePoints.map(p => p.toArray()) : null,
+            baseSize: mesh.userData.baseSize ? { ...mesh.userData.baseSize } : null
         }
     };
-    
-    if (mesh.userData.isComposite) {
-        data.userData.left = serializeShape(mesh.userData.left);
-        data.userData.right = serializeShape(mesh.userData.right);
+
+    // Groups are n-ary: every child is stored, and the CSG result is recomputed on load
+    // rather than saved, so the geometry never has to go through JSON.
+    if (mesh.userData.isComposite && mesh.userData.groupChildren) {
+        data.userData.groupChildren = mesh.userData.groupChildren.map(child => serializeShape(child));
     }
     return data;
 }
@@ -2475,58 +2519,77 @@ function serializeScene() {
     };
 }
 
+// Rebuilds a leaf geometry from its saved userData. Hardware is regenerated from its
+// hwProps by the same code that created it, so a saved NEMA 17 comes back a NEMA 17.
+function rebuildLeafGeometry(ud) {
+    if (ud.type === 'wire' && ud.wirePoints && ud.wirePoints.length > 1) {
+        const pts = ud.wirePoints.map(p => new THREE.Vector3().fromArray(p));
+        const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+        return new THREE.TubeGeometry(curve, Math.max(20, pts.length * 10), 0.15, 8, false);
+    }
+    if (ud.isHardware) {
+        const geometry = generateHardwareGeometry(ud.type, ud.hwProps || {});
+        if (geometry) return geometry;
+    }
+    switch (ud.type) {
+        case 'cube': return new THREE.BoxGeometry(2, 2, 2);
+        case 'sphere': return new THREE.SphereGeometry(1.5, 32, 32);
+        case 'cylinder': return new THREE.CylinderGeometry(1, 1, 2, 32);
+        case 'cone': return new THREE.ConeGeometry(1.5, 2, 32);
+        default: return new THREE.BoxGeometry(2, 2, 2);
+    }
+}
+
 function deserializeShape(data) {
     let mesh;
     const material = new THREE.MeshStandardMaterial({
         color: data.material.color,
         transparent: data.material.transparent,
         opacity: data.material.opacity,
-        roughness: 0.4,
-        metalness: 0.1
+        roughness: data.material.roughness !== undefined ? data.material.roughness : 0.4,
+        metalness: data.material.metalness !== undefined ? data.material.metalness : 0.1
     });
 
-    if (data.userData.isComposite) {
-        const left = deserializeShape(data.userData.left);
-        const right = deserializeShape(data.userData.right);
-        
+    const ud = { ...data.userData };
+
+    if (ud.isComposite && ud.groupChildren) {
+        const children = ud.groupChildren.map(childData => deserializeShape(childData));
+
         mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
         mesh.position.fromArray(data.position);
         mesh.quaternion.fromArray(data.quaternion);
         mesh.scale.fromArray(data.scale);
         mesh.updateMatrix();
-        
-        mesh.add(left);
-        mesh.add(right);
-        mesh.userData = data.userData;
-        mesh.userData.left = left;
-        mesh.userData.right = right;
+
+        mesh.userData = ud;
+        mesh.userData.groupChildren = children;
+        children.forEach(child => {
+            child.visible = false;
+            mesh.add(child);
+        });
         mesh.updateMatrixWorld(true);
-        
-        // Use the existing rebuildCSG logic to regenerate geometry
+
+        // Regenerate the CSG result from the children instead of storing it.
         rebuildCSG(mesh);
     } else {
-        let geometry;
-        switch(data.userData.type) {
-            case 'cube': geometry = new THREE.BoxGeometry(2, 2, 2); break;
-            case 'sphere': geometry = new THREE.SphereGeometry(1.5, 32, 32); break;
-            case 'cylinder': geometry = new THREE.CylinderGeometry(1, 1, 2, 32); break;
-            case 'cone': geometry = new THREE.ConeGeometry(1.5, 2, 32); break;
-            default: geometry = new THREE.BoxGeometry(2,2,2);
-        }
+        const geometry = rebuildLeafGeometry(ud);
         mesh = new THREE.Mesh(geometry, material);
-        mesh.userData = data.userData;
+
+        if (ud.wirePoints) ud.wirePoints = ud.wirePoints.map(p => new THREE.Vector3().fromArray(p));
+        mesh.userData = ud;
         mesh.userData.originalGeometry = geometry;
-        
+        if (!mesh.userData.baseSize) mesh.userData.baseSize = measureBaseSize(geometry);
+
         mesh.position.fromArray(data.position);
         mesh.quaternion.fromArray(data.quaternion);
         mesh.scale.fromArray(data.scale);
         mesh.updateMatrix();
     }
-    
+
     mesh.uuid = data.uuid;
     mesh.name = data.name;
     mesh.updateMatrixWorld(true);
-    
+
     return mesh;
 }
 

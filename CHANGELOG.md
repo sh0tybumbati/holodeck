@@ -34,5 +34,10 @@ All notable changes to this project will be documented in this file.
 - **Asset Caching**: Added cache-busting version strings (`?v=2`) to HTML script and link tags to ensure clients receive immediate updates.
 
 ### Fixed
+- **Grouping**: Grouping two shapes reported `Grouping failed` and left the group in the scene anyway. The group mesh was built without a `baseSize`, which the properties panel then dereferenced.
+- **Undo/Save After Grouping**: Once a group existed, every subsequent save threw and was swallowed, silently freezing undo/redo and writing stale `.holo` files for the rest of the session. The serializer still expected the old binary `left`/`right` CSG tree; groups are now stored as their n-ary `groupChildren` and the CSG result is recomputed on load.
+- **Hardware Persistence**: Motors, screws, extrusions and wire routes were saved as a bare type string with no `hwProps`, and came back from undo/redo as a 2×2×2 cube. Hardware is now regenerated from its saved parameters, and `isHole` is persisted too.
+- **Group Position on Rebuild**: Rebuilding a group's CSG re-based the result against `matrixWorld`, but three-csg-ts evaluates from local matrices, so every rebuild shifted the group by `-position` — visible when editing a dimension inside a group, and corrupting the solid of any group containing it.
+- **STL Export**: Exports contained the transform gizmo, alignment handles, wire preview and the hidden children CSG had already consumed — a single cube exported 3,584 facets instead of 12. Export now builds a scene of the real solids only, skips holes, and refuses an empty scene.
 - **Paste Duplication Bug**: Fixed recursive reference and cloning issues when pasting groups or individual shapes, ensuring independent geometric clones.
 - **Theme Material Caching**: Resolved a WebGL MultiMaterial caching bug in Three.js where the ViewCube would retain old colors when switching themes. The ViewCube mesh is now entirely destroyed and regenerated from scratch on theme change.
