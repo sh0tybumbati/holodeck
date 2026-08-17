@@ -424,6 +424,26 @@ async function run() {
     check('cut-then-paste-keeps-its-geometry', pastedAfterCut && pastedAfterCut.facets === 12,
         fmt(pastedAfterCut));
 
+    // 12. Marking a part of a group as a hole must cut it out of the assembly. The toggle used
+    //     to write to the selection, so it flagged the whole group instead of the part shown.
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    document.querySelector('[data-shape="sphere"]').click();
+    boxSelectAll();
+    byId('group-shapes').click();
+    const solidAssembly = await exportSignature();
+
+    const holePicker = byId('obj-part');
+    holePicker.value = holePicker.options[1].value;
+    holePicker.dispatchEvent(new Event('change', { bubbles: true }));
+    byId('type-hole').checked = true;
+    byId('type-hole').dispatchEvent(new Event('change', { bubbles: true }));
+    const cutAssembly = await exportSignature();
+
+    check('marking-a-part-as-hole-recuts-the-group',
+        solidAssembly && cutAssembly && solidAssembly.bounds !== cutAssembly.bounds,
+        `solid "${fmt(solidAssembly)}" -> hole "${fmt(cutAssembly)}"`);
+
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }
 

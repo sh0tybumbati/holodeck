@@ -914,10 +914,12 @@ function setupPropertyInputs() {
     
     document.getElementsByName('obj-type').forEach(radio => {
         radio.addEventListener('change', (e) => {
-            if (selectedShapes.length === 1) {
-                const shape = selectedShapes[0];
+            // Applies to the node the panel is showing, so a part inside a group can be
+            // turned into a hole after the fact.
+            const shape = currentPropertyNode;
+            if (shape) {
                 shape.userData.isHole = (e.target.value === 'hole');
-                
+
                 if (shape.userData.isHole) {
                     shape.material.transparent = true;
                     shape.material.opacity = 0.3;
@@ -925,8 +927,16 @@ function setupPropertyInputs() {
                 } else {
                     shape.material.transparent = document.getElementById('obj-transparent').checked;
                     shape.material.opacity = shape.material.transparent ? 0.85 : 1.0;
-                    shape.material.color.setHex(document.getElementById('obj-color').value.replace('#', '0x'));
+                    shape.material.color.set(document.getElementById('obj-color').value);
                 }
+
+                // Changing what a part is re-cuts the assembly it belongs to.
+                let parentGroup = shape.parent;
+                while (parentGroup && parentGroup.type !== 'Scene') {
+                    if (parentGroup.userData.isComposite) rebuildCSG(parentGroup);
+                    parentGroup = parentGroup.parent;
+                }
+
                 historyManager.saveState();
             }
         });
