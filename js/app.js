@@ -1887,41 +1887,52 @@ function updateSelectionEffects() {
         if (transformControl.getMode() === 'scale') updateDimensions();
     } else {
         panel.style.display = 'none';
+        // Drop the panel's target too: it may point at a mesh that was just deleted or
+        // replaced by a restore, and the variables panel refreshes from it.
+        currentPropertyNode = null;
         if (previewMesh) { previewScene.remove(previewMesh); previewMesh = null; }
         clearDimensions();
     }
 }
 
+// Fills the properties panel from `node`, which is the selected shape or, for a group, the
+// sub-part chosen in the part dropdown. It must read `node` and never the global selection:
+// a sub-part has its own colour and its own hardware parameters, and the panel is also
+// refreshed on variable changes, when nothing may be selected at all.
 function selectPropertyNode(node) {
-    currentPropertyNode = node;    
+    currentPropertyNode = node;
+    if (!node) return;
+
+    const mat = Array.isArray(node.material) ? node.material[0] : node.material;
+
     document.getElementById('hardware-properties').style.display = 'none';
-    if (selectedShape.userData.isHardware) {
+    if (node.userData.isHardware) {
         document.getElementById('hardware-properties').style.display = 'flex';
         // Hide others, show relevant
         document.querySelectorAll('.hw-extrusion, .hw-motor, .hw-screw').forEach(el => el.style.display = 'none');
-        document.querySelectorAll(`.hw-${selectedShape.userData.type}`).forEach(el => el.style.display = 'flex');
-        
+        document.querySelectorAll(`.hw-${node.userData.type}`).forEach(el => el.style.display = 'flex');
+
         // Populate dropdowns based on hwProps
-        const props = selectedShape.userData.hwProps || {};
-        if (selectedShape.userData.type === 'extrusion') {
+        const props = node.userData.hwProps || {};
+        if (node.userData.type === 'extrusion') {
             const profileEl = document.getElementById('hw-extrusion-profile');
             if (profileEl && props.profile) profileEl.value = props.profile;
             const slotEl = document.getElementById('hw-extrusion-slot');
             if (slotEl && props.slot) slotEl.value = props.slot;
-        } else if (selectedShape.userData.type === 'motor') {
+        } else if (node.userData.type === 'motor') {
             const nemaEl = document.getElementById('hw-motor-type');
             if (nemaEl && props.nema) nemaEl.value = props.nema;
-        } else if (selectedShape.userData.type === 'screw') {
+        } else if (node.userData.type === 'screw') {
             const sizeEl = document.getElementById('hw-screw-size');
             if (sizeEl && props.size) sizeEl.value = props.size;
             const headEl = document.getElementById('hw-screw-head');
             if (headEl && props.head) headEl.value = props.head;
         }
     }
-    
-    document.getElementById('obj-color').value = '#' + (Array.isArray(selectedShape.material) ? selectedShape.material[0].color : selectedShape.material.color).getHexString();
-    document.getElementById('obj-transparent').checked = node.material.transparent;
-    
+
+    document.getElementById('obj-color').value = '#' + mat.color.getHexString();
+    document.getElementById('obj-transparent').checked = mat.transparent;
+
     let base = node.userData.baseSize;
     if (!base) {
         base = measureBaseSize(node.geometry);
@@ -2704,35 +2715,41 @@ if (btnSelectDir) {
 }
 
 function updateSelectedHardwareProfile() {
-    if (!selectedShape || !selectedShape.userData.isHardware) return;
-    const type = selectedShape.userData.type;
-    const props = selectedShape.userData.hwProps || {};
-    
+    // Edits whatever the panel is showing, which for a group is the chosen sub-part.
+    const target = currentPropertyNode;
+    if (!target || !target.userData.isHardware) return;
+    const type = target.userData.type;
+    const props = target.userData.hwProps || {};
+
     if (type === 'extrusion') {
         props.profile = document.getElementById('hw-extrusion-profile').value;
         props.slot = document.getElementById('hw-extrusion-slot').value;
-        selectedShape.name = `Alu Extrusion ${props.profile}`;
+        target.name = `Alu Extrusion ${props.profile}`;
     } else if (type === 'motor') {
         props.nema = document.getElementById('hw-motor-type').value;
-        selectedShape.name = `Stepper NEMA ${props.nema}`;
+        target.name = `Stepper NEMA ${props.nema}`;
     } else if (type === 'screw') {
         props.size = document.getElementById('hw-screw-size').value;
         props.head = document.getElementById('hw-screw-head').value;
-        selectedShape.name = `Screw ${props.size}`;
+        target.name = `Screw ${props.size}`;
     }
-    
+
     const newGeom = generateHardwareGeometry(type, props);
-    if (selectedShape.geometry) selectedShape.geometry.dispose();
-    selectedShape.geometry = newGeom;
-    selectedShape.userData.originalGeometry = newGeom;
-    
-    newGeom.computeBoundingBox();
-    const sz = new THREE.Vector3();
-    newGeom.boundingBox.getSize(sz);
-    selectedShape.userData.baseSize = { x: sz.x, y: sz.y, z: sz.z };
-    
+    if (target.geometry) target.geometry.dispose();
+    target.geometry = newGeom;
+    target.userData.originalGeometry = newGeom;
+    target.userData.hwProps = props;
+    target.userData.baseSize = measureBaseSize(newGeom);
+
+    // If this part lives inside a group, the group's solid has to be re-cut around it.
+    let parentGroup = target.parent;
+    while (parentGroup && parentGroup.type !== 'Scene') {
+        if (parentGroup.userData.isComposite) rebuildCSG(parentGroup);
+        parentGroup = parentGroup.parent;
+    }
+
     // Refresh properties panel to show new dimensions
-    if (currentPropertyNode) selectPropertyNode(currentPropertyNode);
+    selectPropertyNode(target);
     updateDimensions();
     renderBOM();
     historyManager.saveState();

@@ -34,6 +34,7 @@ All notable changes to this project will be documented in this file.
 - **Asset Caching**: Added cache-busting version strings (`?v=2`) to HTML script and link tags to ensure clients receive immediate updates.
 
 ### Fixed
+- **Properties Panel Target**: `selectPropertyNode` read the global selection instead of the node it was given, so editing a variable with nothing selected threw, and a group's sub-part showed the group's colour and hardware parameters rather than its own. The panel now reads the node it was handed, the hardware dropdowns write to that same node (re-cutting the enclosing group when the part is inside one), and the panel's target is cleared on deselect instead of pointing at a deleted mesh.
 - **Grouping**: Grouping two shapes reported `Grouping failed` and left the group in the scene anyway. The group mesh was built without a `baseSize`, which the properties panel then dereferenced.
 - **Undo/Save After Grouping**: Once a group existed, every subsequent save threw and was swallowed, silently freezing undo/redo and writing stale `.holo` files for the rest of the session. The serializer still expected the old binary `left`/`right` CSG tree; groups are now stored as their n-ary `groupChildren` and the CSG result is recomputed on load.
 - **Hardware Persistence**: Motors, screws, extrusions and wire routes were saved as a bare type string with no `hwProps`, and came back from undo/redo as a 2×2×2 cube. Hardware is now regenerated from its saved parameters, and `isHole` is persisted too.

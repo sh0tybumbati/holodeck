@@ -181,6 +181,52 @@ async function run() {
     check('hardware-survives-undo-redo', sameMesh(motor, remotor),
         `before "${fmt(motor)}" after "${fmt(remotor)}"`);
 
+    // 6b. The hardware dropdowns write to whatever the panel is showing, so re-selecting a
+    //     restored motor and changing its NEMA size must regenerate that part's geometry.
+    boxSelectAll();
+    const nema = byId('hw-motor-type');
+    nema.value = '23';
+    nema.dispatchEvent(new Event('change', { bubbles: true }));
+    const bigger = await exportSignature();
+    check('hardware-dropdown-regenerates-geometry', bigger && bigger.bounds !== motor.bounds,
+        `nema17 "${fmt(motor)}" nema23 "${fmt(bigger)}"`);
+
+    // 7. The properties panel must read the node it was handed, not whatever is selected.
+    //    Editing a variable with nothing selected used to throw, because selectPropertyNode
+    //    dereferenced the global selectedShape and currentPropertyNode was never cleared.
+    clearScene();
+    const errorsBefore = uncaught.length;
+    byId('add-var-btn').click();
+    const varValue = document.querySelectorAll('#variables-list input')[1];
+    varValue.value = '5';
+    varValue.dispatchEvent(new Event('input', { bubbles: true }));
+    check('variable-edit-with-nothing-selected-does-not-throw', uncaught.length === errorsBefore,
+        uncaught.slice(errorsBefore).join(' ;; ') || 'no errors');
+
+    // 7b. Each sub-part of a group must show its own colour, not the group's.
+    const setColour = hex => {
+        const picker = byId('obj-color');
+        picker.value = hex;
+        picker.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    document.querySelector('[data-shape="cube"]').click();
+    setColour('#ff0000');
+    document.querySelector('[data-shape="sphere"]').click();
+    setColour('#00ff00');
+    boxSelectAll();
+    byId('group-shapes').click();
+
+    const parts = byId('obj-part');
+    const partColours = [];
+    for (const opt of [...parts.options].slice(1)) {
+        parts.value = opt.value;
+        parts.dispatchEvent(new Event('change', { bubbles: true }));
+        partColours.push(byId('obj-color').value);
+    }
+    check('subpart-shows-its-own-colour',
+        partColours.length === 2 && partColours[0] !== partColours[1],
+        `parts=${parts.options.length} colours=${partColours.join(',')}`);
+
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
     out.textContent = JSON.stringify(results, null, 1);
