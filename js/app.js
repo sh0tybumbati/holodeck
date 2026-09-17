@@ -2406,11 +2406,18 @@ function performDistribute(axis, valType) {
     updateStatus(`Distributed ${selectedShapes.length} shapes along ${axis.toUpperCase()}`);
 }
 
+// 1 scene unit is 1 cm (see createMotorGeometry: a NEMA 17's real 42.3mm face is modelled as
+// 4.23). STL carries no unit of its own, but every consumer that matters here — slicers,
+// printers, CAD import — treats it as millimetres, so the export has to convert or every
+// model comes out 10x the wrong size the moment it leaves Holodeck.
+const STL_EXPORT_SCALE = 10; // cm -> mm
+
 function exportSTL() {
     // STLExporter traverses every Mesh it is handed and ignores .visible, so exporting the
     // live scene ships the transform gizmo, the alignment handles, the wire preview and the
     // hidden children CSG already consumed. Build a scene holding only the real solids.
     const exportScene = new THREE.Scene();
+    exportScene.scale.setScalar(STL_EXPORT_SCALE);
     let exported = 0;
 
     shapes.forEach(shape => {
