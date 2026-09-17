@@ -2061,8 +2061,10 @@ function onPointerDown(event) {
     raycaster.setFromCamera(mouse, activeCamera);
 
     if (isWiringMode) {
-        // intersect against shapes or a plane
-        const intersects = raycaster.intersectObjects(shapes);
+        // intersect against shapes or a plane. Non-recursive: a group's hidden CSG source
+        // meshes sit inside it with matching geometry, and intersectObjects defaults to
+        // recursive, so a click could otherwise hit one of those instead of the group.
+        const intersects = raycaster.intersectObjects(shapes, false);
         let pt;
         if (intersects.length > 0) {
             pt = intersects[0].point;
@@ -2079,7 +2081,12 @@ function onPointerDown(event) {
         return;
     }
 
-    const intersects = raycaster.intersectObjects(shapes);
+    // Non-recursive: a grouped part's original mesh lives on (hidden) inside the group so its
+    // CSG result can be rebuilt, occupying the same space as the group's visible surface.
+    // intersectObjects defaults to recursive and does not check .visible, so a click could
+    // otherwise select that hidden mesh instead of the group — corrupting the group's
+    // parent/children bookkeeping the moment it gets grouped or moved again.
+    const intersects = raycaster.intersectObjects(shapes, false);
     if (intersects.length > 0) {
         const clickedShape = intersects[0].object;
         if (selectedShapes.indexOf(clickedShape) === -1 || (event.ctrlKey || event.metaKey || event.shiftKey)) selectShape(clickedShape, event);
@@ -2094,7 +2101,7 @@ function onPointerMove(event) {
     if (isWiringMode && wirePreviewSphere) {
         mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
         raycaster.setFromCamera(mouse, activeCamera);
-        const intersects = raycaster.intersectObjects(shapes);
+        const intersects = raycaster.intersectObjects(shapes, false);
         if (intersects.length > 0) {
             wirePreviewSphere.position.copy(intersects[0].point);
         } else {
@@ -2198,6 +2205,30 @@ function updateAlignmentGizmo() {
     addHandle(bounds.min.x - 1, bounds.min.y - 1, bounds.min.z, 'z', 'min', bounds.min.z); addHandle(bounds.min.x - 1, bounds.min.y - 1, cZ, 'z', 'center', cZ); addHandle(bounds.min.x - 1, bounds.min.y - 1, bounds.max.z, 'z', 'max', bounds.max.z);
     
     alignmentGizmo.add(new THREE.Box3Helper(bounds, accentColor)); scene.add(alignmentGizmo);
+    updateAlignmentGizmoScale();
+}
+
+// Handles are built at a fixed world-space radius, which makes them shrink to nothing when
+// zoomed out and swell to engulf the model when zoomed in. Re-derive their scale every frame
+// from the current view so they hold a constant on-screen size instead.
+const HANDLE_SCREEN_RADIUS_PX = 6;
+const HANDLE_BASE_RADIUS = 0.7; // must match the SphereGeometry radius passed to addHandle above
+
+function updateAlignmentGizmoScale() {
+    if (!alignmentGizmo || !activeCamera) return;
+    const viewportHeight = renderer.domElement.clientHeight || window.innerHeight;
+    alignmentGizmo.children.forEach(handle => {
+        if (!handle.userData.isHandle) return;
+        let worldPerPixel;
+        if (activeCamera.isOrthographicCamera) {
+            worldPerPixel = (activeCamera.top - activeCamera.bottom) / activeCamera.zoom / viewportHeight;
+        } else {
+            const dist = handle.position.distanceTo(activeCamera.position);
+            const visibleHeight = 2 * dist * Math.tan(THREE.MathUtils.degToRad(activeCamera.fov) / 2);
+            worldPerPixel = visibleHeight / viewportHeight;
+        }
+        handle.scale.setScalar((HANDLE_SCREEN_RADIUS_PX * worldPerPixel) / HANDLE_BASE_RADIUS);
+    });
 }
 
 function performAlign(axis, valType, targetVal) {
@@ -2521,6 +2552,7 @@ function onWindowResize() {
 
 function animate() {
     requestAnimationFrame(animate); controls.update();
+    updateAlignmentGizmoScale();
     if (composer) composer.render(); else renderer.render(scene, activeCamera);
     if (labelRenderer) labelRenderer.render(scene, activeCamera);
     
