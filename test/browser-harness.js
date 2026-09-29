@@ -154,7 +154,7 @@ async function run() {
 
     // 5b. A group inside a group: the outer CSG consumes the inner group's rebuilt geometry,
     //     so any drift in rebuildCSG's frame handling lands the whole solid somewhere else.
-    document.querySelector('[data-shape="cylinder"]').click();
+    document.querySelector('[data-shape="cone"]').click();
     boxSelectAll();
     byId('group-shapes').click();
     const nested = await exportSignature();
@@ -593,7 +593,7 @@ async function run() {
     clearScene();
     document.querySelector('[data-shape="cube"]').click();
     byId('round-edges').click();
-    await driveDialog({ style: 'chamfer', radius: 2 });
+    await driveDialog({ size: 2, steps: 1 });
     const chamfered = await sigOf();
     check('chamfer-edges-of-a-cube', chamfered && chamfered.facets === 108, fmt(chamfered));
     const chamferSize = chamfered.bounds.match(/\[(.*?)\]\.\.\[(.*?)\]/).slice(1).map(x => x.split(',').map(Number));
@@ -603,14 +603,14 @@ async function run() {
     check('rounded-edges-survive-undo', sameMesh(await sigOf(), chamfered), 'after undo');
     const savedEdge = await saveAndParse();
     const lastState = JSON.stringify(savedEdge.undoStack[savedEdge.undoStack.length - 1]);
-    check('edge-parameters-are-saved-not-vertices', lastState.includes('"chamfer"') && !lastState.includes('"importId":"'),
-        `state has chamfer=${lastState.includes('"chamfer"')}`);
+    check('edge-parameters-are-saved-not-vertices', lastState.includes('"steps":1') && !lastState.includes('"importId":"'),
+        `state has chamfer=${lastState.includes('"steps":1')}`);
     check('save-only-embeds-meshes-history-still-uses',
         Object.keys(savedEdge.assets || {}).length > 0 && Object.keys(savedEdge.assets || {}).every(id => JSON.stringify(savedEdge.undoStack).includes(id)),
         `assets=${Object.keys(savedEdge.assets || {}).length}`);
     boxSelectAll();
     byId('round-edges').click();
-    await driveDialog({ style: 'none' });
+    await driveDialog({ size: 0, steps: 1 });
     const sharp = await sigOf();
     check('sharp-removes-the-rounding', sharp && sharp.facets === 12, fmt(sharp));
 
@@ -876,6 +876,83 @@ async function run() {
     check('status-bar-is-a-live-region', byId('status-bar').getAttribute('aria-live') === 'polite', 'aria-live=polite');
 
     check('no-uncaught-errors-after-polish', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 19. Cone / cylinder tool and bevels.
+    const setBox = (id, v) => { const el = byId(id); el.value = v; el.dispatchEvent(new Event('change', { bubbles: true })); };
+    check('cylinder-button-is-gone', !document.querySelector('[data-shape="cylinder"]'), 'merged into the cone tool');
+    clearScene();
+    document.querySelector('[data-shape="cone"]').click();
+    check('cone-panel-shows-top-height-bottom',
+        byId('cone-properties').style.display === 'flex' && byId('obj-cone-top').value === '5' && byId('obj-cone-height').value === '20' && byId('obj-cone-bottom').value === '15',
+        `${byId('obj-cone-top').value}/${byId('obj-cone-height').value}/${byId('obj-cone-bottom').value}`);
+    const b3 = s => s.bounds.replace(/[\[\]]/g, ' ').replace('..', ',').split(',').map(Number); // [minx,miny,minz, maxx,maxy,maxz]
+    const frustumSig = await sigOf();
+    const fb = b3(frustumSig);
+    check('default-cone-is-30mm-wide-and-20mm-tall', Math.abs(fb[3] - fb[0] - 30) < 0.01 && Math.abs(fb[4] - fb[1] - 20) < 0.01, fmt(frustumSig));
+
+    setBox('obj-cone-top', '10'); setBox('obj-cone-bottom', '10'); setBox('obj-cone-height', '30');
+    const cyl = await sigOf(); const cb = b3(cyl);
+    check('equal-radii-make-a-cylinder', Math.abs(cb[3] - cb[0] - 20) < 0.01 && Math.abs(cb[4] - cb[1] - 30) < 0.01 && Math.abs(cb[5] - cb[2] - 20) < 0.01, fmt(cyl));
+
+    setBox('obj-cone-top', '0');
+    const pointed = await sigOf();
+    check('zero-top-radius-makes-a-cone', pointed && pointed.facets < cyl.facets, fmt(pointed));
+    setBox('obj-cone-top', '0'); setBox('obj-cone-bottom', '0');
+    check('both-radii-zero-is-refused-and-changes-nothing', /needs a height above zero/.test(status()) && sameMesh(await sigOf(), pointed), status());
+
+    setBox('obj-cone-top', '10'); setBox('obj-cone-bottom', '10');
+    const plainCyl = await sigOf();
+    setBox('obj-bevel-size', '2'); setBox('obj-bevel-steps', '3');
+    const bevelled = await sigOf();
+    const bb = b3(bevelled);
+    check('bevelling-a-cylinder-adds-facets-and-keeps-its-size',
+        bevelled.facets > plainCyl.facets && Math.abs(bb[3] - bb[0] - 20) < 0.01 && Math.abs(bb[4] - bb[1] - 30) < 0.01, `${plainCyl.facets} -> ${bevelled.facets} ${bevelled.bounds}`);
+    setBox('obj-bevel-steps', '1');
+    const chamf = await sigOf();
+    check('one-step-is-a-flat-chamfer-with-fewer-facets', chamf.facets < bevelled.facets && chamf.facets > plainCyl.facets, `${chamf.facets}`);
+    const savedCone = await saveAndParse();
+    const coneState = JSON.stringify(savedCone.undoStack[savedCone.undoStack.length - 1]);
+    check('cone-parameters-are-saved-not-vertices', coneState.includes('"cone":{') && coneState.includes('"steps":1') && !coneState.includes('"importId":"'), 'params in state');
+    document.querySelector('[data-shape="sphere"]').click();
+    byId('btn-undo').click();
+    check('cone-and-bevel-survive-undo', sameMesh(await sigOf(), chamf), 'after undo');
+
+    // A cube takes the same panel fields.
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    check('cube-panel-shows-bevel-but-not-cone-fields', byId('bevel-properties').style.display === 'flex' && byId('cone-properties').style.display === 'none', 'panel rows');
+    setBox('obj-bevel-size', '3'); setBox('obj-bevel-steps', '4');
+    const cubeBev = await sigOf();
+    check('cube-bevel-with-steps', cubeBev.facets > 12, fmt(cubeBev));
+    setBox('obj-bevel-size', '0');
+    check('bevel-size-zero-restores-the-sharp-cube', (await sigOf()).facets === 12, 'sharp again');
+
+    // The toolbar button opens the same controls as a dialog, for a cone too.
+    clearScene();
+    document.querySelector('[data-shape="cone"]').click();
+    byId('round-edges').click();
+    await driveDialog({ size: 2, steps: 2 });
+    check('toolbar-bevel-dialog-works-on-a-cone', /Beveled: 2 mm in 2 steps/.test(status()), status());
+
+    // Projects saved before the merge held separate cylinder and cone shapes.
+    const legacyShape = type => ({ uuid: 'legacy-' + type, name: type, position: [0, 1, 0], quaternion: [0, 0, 0, 1], scale: [1, 1, 1],
+        material: { color: 0xff0000, transparent: true, opacity: 0.85, roughness: 0.4, metalness: 0.1 },
+        userData: { type, bindings: {}, isComposite: false, isHole: false } });
+    async function loadLegacy(type) {
+        clearScene();
+        const project = { version: '2.1', undoStack: [{ shapes: [legacyShape(type)], variables: {}, metadata: {}, bom: [] }], redoStack: [] };
+        const dt2 = new DataTransfer(); dt2.items.add(new File([JSON.stringify(project)], 'old.holo'));
+        byId('file-load').files = dt2.files;
+        byId('file-load').dispatchEvent(new Event('change', { bubbles: true }));
+        await new Promise(r => setTimeout(r, 500));
+        return sigOf();
+    }
+    const oldCyl = await loadLegacy('cylinder'); const oc = b3(oldCyl);
+    check('an-old-cylinder-loads-as-a-cone-shape-with-equal-radii', Math.abs(oc[3] - oc[0] - 20) < 0.01 && Math.abs(oc[4] - oc[1] - 20) < 0.01, fmt(oldCyl));
+    const oldCone = await loadLegacy('cone'); const ok2 = b3(oldCone);
+    check('an-old-cone-loads-at-its-old-size', Math.abs(ok2[3] - ok2[0] - 30) < 0.01 && Math.abs(ok2[4] - ok2[1] - 20) < 0.01, fmt(oldCone));
+
+    check('no-uncaught-errors-after-cone', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }

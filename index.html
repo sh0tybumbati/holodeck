@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="vendor/fonts/inter.css">
     <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
     <!-- Styles -->
-    <link rel="stylesheet" href="css/style.css?v=3">
+    <link rel="stylesheet" href="css/style.css?v=5">
 </head>
 <body data-color-theme="holodeck" data-brightness="dark">
     <!-- Local Project Dashboard Overlay -->
@@ -124,10 +124,7 @@
             <button class="tool-btn" data-shape="sphere" title="Add Sphere">
                 <i class="fas fa-circle"></i>
             </button>
-            <button class="tool-btn" data-shape="cylinder" title="Add Cylinder">
-                <i class="fas fa-database"></i>
-            </button>
-            <button class="tool-btn" data-shape="cone" title="Add Cone">
+            <button class="tool-btn" data-shape="cone" title="Add Cone / Cylinder (top radius, height, bottom radius)">
                 <i class="fas fa-caret-up"></i>
             </button>
         </div>
@@ -160,7 +157,7 @@
             <button class="tool-btn" id="array-selected" title="Linear / polar array">
                 <i class="fas fa-th"></i>
             </button>
-            <button class="tool-btn" id="round-edges" title="Fillet / chamfer a cube's edges">
+            <button class="tool-btn" id="round-edges" title="Bevel / chamfer the edges of a cube or cone">
                 <i class="fas fa-vector-square"></i>
             </button>
         </div>
@@ -277,6 +274,30 @@
                 <label>L (Z):</label>
                 <input type="text" id="obj-l" placeholder="Length">
             </div>
+            <div id="cone-properties" style="display: none; flex-direction: column; gap: 8px; margin-bottom: 8px;">
+                <div class="prop-row" title="Radius of the top face in mm. 0 makes a point.">
+                    <label for="obj-cone-top">Top R (mm):</label>
+                    <input type="text" id="obj-cone-top">
+                </div>
+                <div class="prop-row" title="Height in mm.">
+                    <label for="obj-cone-height">Height (mm):</label>
+                    <input type="text" id="obj-cone-height">
+                </div>
+                <div class="prop-row" title="Radius of the bottom face in mm. Equal radii make a cylinder.">
+                    <label for="obj-cone-bottom">Bottom R (mm):</label>
+                    <input type="text" id="obj-cone-bottom">
+                </div>
+            </div>
+            <div id="bevel-properties" style="display: none; flex-direction: column; gap: 8px; margin-bottom: 8px;">
+                <div class="prop-row" title="How far the bevel reaches along each face, in mm. 0 for a sharp edge.">
+                    <label for="obj-bevel-size">Bevel (mm):</label>
+                    <input type="text" id="obj-bevel-size">
+                </div>
+                <div class="prop-row" title="1 is a flat chamfer; more steps make the edge progressively rounder.">
+                    <label for="obj-bevel-steps">Bevel steps:</label>
+                    <input type="text" id="obj-bevel-steps">
+                </div>
+            </div>
             <div class="prop-row triple" title="Position in cm (within the group, for a part of a group). Accepts expressions and variables.">
                 <label>Pos:</label>
                 <input type="text" id="obj-px" aria-label="Position X" placeholder="X">
@@ -382,6 +403,6 @@
     <script src="vendor/gsap.min.js"></script>
     <script src="vendor/three/examples/utils/BufferGeometryUtils.js"></script>
     <script src="vendor/three/examples/loaders/SVGLoader.js"></script>
-    <script type="module" src="js/app.js?v=10"></script>
+    <script type="module" src="js/app.js?v=11"></script>
 </body>
 </html>

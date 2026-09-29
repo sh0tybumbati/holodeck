@@ -4,8 +4,8 @@ Holodeck is a web-based, 3D CAD modeling and design tool built with Three.js. It
 
 ## Features
 
-- **3D Workspace**: Add cubes, spheres, cones, cylinders, and toruses.
-- **Modelling**: Duplicate (Ctrl+D), mirror, linear/polar arrays, fillet/chamfer on cubes, and a sketch tool that extrudes or revolves a drawn polygon.
+- **3D Workspace**: Add cubes, spheres and a cone/cylinder tool (top radius, height, bottom radius); bevel or chamfer cube and cone edges with a chosen radius and number of steps.
+- **Modelling**: Duplicate (Ctrl+D), mirror, linear/polar arrays, bevel/chamfer on cubes and cones, and a sketch tool that extrudes or revolves a drawn polygon.
 - **Transform Tools**: Translate, rotate, and scale your objects intuitively, or type exact position and rotation values; a live readout shows the snapped value while dragging, and a measure tool reports distances between points.
 - **Advanced Alignment & Distribution**: Snap objects relative to each other's edges or centers using custom 3D gizmos.
 - **Variables & Math**: Define numeric variables and formulas in the properties panel to drive your design programmatically.
