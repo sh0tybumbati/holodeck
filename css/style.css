@@ -578,3 +578,7 @@ body.touch-mode .tool-select { min-height: 40px; }
     color: #fff; background: rgba(0, 0, 0, 0.75); border: 1px solid var(--accent);
 }
 .measure-label small { display: block; font-weight: 400; opacity: 0.8; }
+
+body.busy, body.busy * { cursor: progress !important; }
+body.busy #status-bar .status-icon { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

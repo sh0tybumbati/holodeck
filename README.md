@@ -16,7 +16,7 @@ Holodeck is a web-based, 3D CAD modeling and design tool built with Three.js. It
 - **Hotkeys**: Supports standard shortcuts (Ctrl+C, Ctrl+V, Ctrl+X, Delete) and object grouping (Ctrl+G / Ctrl+Shift+G).
 
 ## Usage
-Simply open `index.html` in a modern web browser to start using Holodeck. No build step or local server is strictly required for the core application, though a local server is recommended for loading external assets if added in the future.
+Serve the folder with any static file server and open it in a modern browser — for example `go run server.go` (port 8080) or `npx serve`. There is no build step, and all libraries are bundled in `vendor/`, so it works offline. (Opening `index.html` straight from disk does not work: browsers block ES modules and workers on `file://` pages.)
 
 ## Tests
 
@@ -35,6 +35,7 @@ node test/test-importers.mjs
 node test/test-modeling.mjs
 node test/test-exporters.mjs
 node test/test-ui.mjs
+node test/test-meshtools.mjs
 ```
 
 Unit tests for the STL/OBJ parsers; pure node, no browser. (SVG needs `THREE.SVGLoader`, so it is

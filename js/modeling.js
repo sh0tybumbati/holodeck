@@ -41,6 +41,7 @@ export function roundedBox(w, h, d, radius, style = 'fillet', segments = 4) {
     const r = Math.max(0, Math.min(radius, Math.min(...half) * 0.98));
     const s = style === 'chamfer' ? 1 : Math.max(1, Math.round(segments));
     const coords = half.map(hk => {
+        if (r === 0) return [-hk, hk]; // a plain box needs no grid
         const c = [];
         for (let i = 0; i <= s; i++) c.push(-hk + r * i / s);
         for (let i = 0; i <= s; i++) c.push(hk - r + r * i / s);

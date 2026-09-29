@@ -475,10 +475,12 @@ async function run() {
         for (let i = 0; i < 40 && !/Imported|Import failed|cancelled/.test(status()); i++) await new Promise(r => setTimeout(r, 50));
         return true;
     }
+    // Outward-wound box triangles (a mesh that winds inward is "inside-out" to the importer).
     const box = (x, y, z) => [
         [0,0,0, x,0,0, x,y,0], [0,0,0, x,y,0, 0,y,0], [0,0,z, x,y,z, x,0,z], [0,0,z, 0,y,z, x,y,z],
         [0,0,0, 0,y,z, 0,0,z], [0,0,0, 0,y,0, 0,y,z], [x,0,0, x,0,z, x,y,z], [x,0,0, x,y,z, x,y,0],
-        [0,0,0, x,0,z, x,0,0], [0,0,0, 0,0,z, x,0,z], [0,y,0, x,y,0, x,y,z], [0,y,0, x,y,z, 0,y,z]];
+        [0,0,0, x,0,z, x,0,0], [0,0,0, 0,0,z, x,0,z], [0,y,0, x,y,0, x,y,z], [0,y,0, x,y,z, 0,y,z]]
+        .map(t => [...t.slice(0, 3), ...t.slice(6, 9), ...t.slice(3, 6)]);
     const asciiStl = tris => 'solid t\n' + tris.map(t => 'facet normal 0 0 0\nouter loop\n'
         + [0, 3, 6].map(i => `vertex ${t[i] + 100} ${t[i + 1] + 100} ${t[i + 2] + 100}\n`).join('')
         + 'endloop\nendfacet\n').join('') + 'endsolid t\n';
@@ -729,6 +731,63 @@ async function run() {
     keys('Escape');
 
     check('no-uncaught-errors-after-precision', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 17. Robustness: mesh health, boolean failures, and the CSG worker.
+    const openTri = 'solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 10 0\nendloop\nendfacet\nendsolid t\n';
+    clearScene();
+    await importViaInput('open.stl', openTri);
+    check('import-warns-about-an-open-mesh', /not watertight \(3 open edge/.test(status()), status());
+
+    clearScene();
+    await importViaInput('closed.stl', asciiStl(box(10, 10, 10)));
+    check('import-of-a-clean-mesh-has-no-warning', !/⚠|Note:/.test(status()), status());
+
+    const insideOut = asciiStl(box(10, 10, 10).map(t => [...t.slice(0, 3), ...t.slice(6, 9), ...t.slice(3, 6)])); // reversed again = inward
+    clearScene();
+    await importViaInput('inside-out.stl', insideOut);
+    check('import-flips-an-inside-out-solid', /flipped/.test(status()) && !/⚠/.test(status()), status());
+
+    // A hole larger than the solid removes everything: that must fail cleanly, not corrupt the scene.
+    clearScene();
+    await importViaInput('small.stl', asciiStl(box(10, 10, 10)));
+    await importViaInput('big.stl', asciiStl(box(30, 30, 30)));
+    byId('type-hole').checked = true;
+    byId('type-hole').dispatchEvent(new Event('change', { bubbles: true }));
+    boxSelectAll();
+    byId('group-shapes').click();
+    check('a-group-that-cuts-away-everything-fails-cleanly', /Grouping failed/.test(status()) && /left nothing/.test(status()), status());
+    const afterFailure = await exportSignature();
+    check('failed-grouping-leaves-the-solid-in-place', afterFailure && afterFailure.facets === 12, fmt(afterFailure));
+
+    // The worker must produce the same solid as the inline path.
+    async function crossGroup(threshold) {
+        window.HOLODECK_CSG_WORKER_THRESHOLD = threshold;
+        clearScene();
+        await importViaInput('a.stl', asciiStl(box(20, 10, 30)));
+        await importViaInput('b.stl', asciiStl(box(10, 20, 10)));
+        boxSelectAll();
+        byId('group-shapes').click();
+        for (let i = 0; i < 100 && !/Grouped|failed/.test(status()); i++) await new Promise(r => setTimeout(r, 50));
+        return { status: status(), sig: await exportSignature() };
+    }
+    const inline = await crossGroup(1e9);
+    const viaWorker = await crossGroup(0);
+    check('inline-group-union-is-a-cross', inline.sig && inline.sig.bounds === '[-10.000,0.000,-15.000]..[10.000,20.000,15.000]', `${inline.status} ${fmt(inline.sig)}`);
+    check('worker-group-matches-inline-exactly', viaWorker.sig && sameMesh(viaWorker.sig, inline.sig), `${fmt(viaWorker.sig)} vs ${fmt(inline.sig)}`);
+
+    // Editing a member of a worker-computed group re-cuts it in the background.
+    window.HOLODECK_CSG_WORKER_THRESHOLD = 0;
+    const workerPartPicker = byId('obj-part');
+    workerPartPicker.value = workerPartPicker.options[1].value;
+    workerPartPicker.dispatchEvent(new Event('change', { bubbles: true }));
+    const workerW = byId('obj-w'); workerW.value = '4'; workerW.dispatchEvent(new Event('change', { bubbles: true }));
+    for (let i = 0; i < 100 && !/recomputed/.test(status()); i++) await new Promise(r => setTimeout(r, 50));
+    const edited = await exportSignature();
+    check('editing-a-worker-group-part-recomputes-it', /recomputed/.test(status()) || edited, `status="${status()}" ${fmt(edited)}`);
+    check('worker-edit-changed-the-solid', edited && edited.bounds !== viaWorker.sig.bounds, `${fmt(edited)} vs ${fmt(viaWorker.sig)}`);
+    window.HOLODECK_CSG_WORKER_THRESHOLD = undefined;
+
+    check('no-uncaught-errors-after-robustness', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }

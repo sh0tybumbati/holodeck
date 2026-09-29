@@ -2,6 +2,8 @@ import { CSG } from '../vendor/three-csg-ts/csg.js';
 import { importFile, importFormatOf, convertImported, UNIT_MM, ImportError, encodePositions, decodePositions } from './importers.js';
 import { showFormDialog, loadPrefs, savePrefs, describeTransform, describeMeasurement } from './ui.js';
 import { EXPORT_FORMATS, countTriangles } from './exporters.js';
+import { evaluateParts } from './csg-core.js';
+import { analyzeMesh, repairMesh, describeHealth } from './meshtools.js';
 import { roundedBox, revolveProfile, mirrorPositions, flipWinding, signedVolume } from './modeling.js';
 
 // Basic Three.js setup
@@ -951,11 +953,7 @@ function setupPropertyInputs() {
                 }
 
                 // Changing what a part is re-cuts the assembly it belongs to.
-                let parentGroup = shape.parent;
-                while (parentGroup && parentGroup.type !== 'Scene') {
-                    if (parentGroup.userData.isComposite) rebuildCSG(parentGroup);
-                    parentGroup = parentGroup.parent;
-                }
+                rebuildAncestors(shape);
 
                 historyManager.saveState();
             }
@@ -1001,11 +999,7 @@ function setupPropertyInputs() {
                 
                 historyManager.saveState();
                 
-                let parentGroup = s.parent;
-                while (parentGroup && parentGroup.type !== 'Scene') {
-                    if (parentGroup.userData.isComposite) rebuildCSG(parentGroup);
-                    parentGroup = parentGroup.parent;
-                }
+                rebuildAncestors(s);
             } else {
                 input.value = (s.scale[axis] * s.userData.baseSize[axis]).toFixed(2);
             }
@@ -1489,10 +1483,16 @@ async function importModelFile(file) {
     updateStatus(`Importing ${file.name}...`);
     try {
         const result = await importFile(file, { svgDepthMm: opts.depth });
-        addImportedMesh({
-            positions: convertImported(result.positions, isSvg ? {} : { unitsMm: UNIT_MM[opts.units], zUp: opts.up === 'z' }),
-            format: result.format, recenter: opts.recenter
-        }, file.name.replace(/\.[^.]+$/, ''));
+        let positions = convertImported(result.positions, isSvg ? {} : { unitsMm: UNIT_MM[opts.units], zUp: opts.up === 'z' });
+        // Booleans need clean closed solids, so say up front when a mesh is not one, and fix
+        // the two things that can be fixed without guessing. Very large meshes skip the check.
+        let note = '';
+        if (positions.length / 9 <= 300000) {
+            const repaired = repairMesh(positions);
+            positions = repaired.positions;
+            note = describeHealth(analyzeMesh(positions), repaired);
+        } else note = 'Note: too large to check for holes.';
+        addImportedMesh({ positions, format: result.format, recenter: opts.recenter, note }, file.name.replace(/\.[^.]+$/, ''));
     } catch (err) {
         if (!(err instanceof ImportError)) console.error(err);
         updateStatus(`Import failed: ${err instanceof ImportError ? err.message : 'could not read ' + file.name}`);
@@ -1504,7 +1504,7 @@ async function importModelFile(file) {
 // shape — and stood on the grid. With `keepPlace` the geometry is centred the same way but
 // the mesh is put back where the positions were (for results built in world space, like a
 // mirror or an extrusion); with recenter false the file's coordinates are used verbatim.
-function addImportedMesh({ positions, format, recenter = true, keepPlace = false, color = 0x9aa7b8, focus = true }, name) {
+function addImportedMesh({ positions, format, recenter = true, keepPlace = false, color = 0x9aa7b8, focus = true, note = '' }, name) {
     const geometry = buildImportedGeometry(positions);
     const center = new THREE.Vector3();
     if (recenter || keepPlace) { geometry.boundingBox.getCenter(center); geometry.translate(-center.x, -center.y, -center.z); }
@@ -1535,7 +1535,7 @@ function addImportedMesh({ positions, format, recenter = true, keepPlace = false
     shapes.push(mesh);
     selectShape(mesh);
     const tris = stored.length / 9;
-    updateStatus(`${format === 'STL' || format === 'OBJ' || format === 'SVG' ? 'Imported' : 'Created'} ${mesh.name} (${format}, ${tris.toLocaleString()} triangles, ${(size.x * 10).toFixed(1)} × ${(size.y * 10).toFixed(1)} × ${(size.z * 10).toFixed(1)} mm)`);
+    updateStatus(`${format === 'STL' || format === 'OBJ' || format === 'SVG' ? 'Imported' : 'Created'} ${mesh.name} (${format}, ${tris.toLocaleString()} triangles, ${(size.x * 10).toFixed(1)} × ${(size.y * 10).toFixed(1)} × ${(size.z * 10).toFixed(1)} mm)${note ? '. ' + note : ''}`);
     historyManager.saveState();
     if (focus) centerSelection();
     return mesh;
@@ -1687,11 +1687,7 @@ async function roundEdges() {
     node.geometry = geometry;
     node.userData.originalGeometry = geometry;
     node.userData.baseSize = measureBaseSize(geometry);
-    let parentGroup = node.parent;
-    while (parentGroup && parentGroup.type !== 'Scene') {
-        if (parentGroup.userData.isComposite) rebuildCSG(parentGroup);
-        parentGroup = parentGroup.parent;
-    }
+    rebuildAncestors(node);
     selectPropertyNode(node);
     updateDimensions();
     historyManager.saveState();
@@ -1738,11 +1734,7 @@ function setupTransformInputs() {
             node.quaternion.setFromEuler(new THREE.Euler(
                 THREE.MathUtils.degToRad(num('obj-rx')), THREE.MathUtils.degToRad(num('obj-ry')), THREE.MathUtils.degToRad(num('obj-rz')), 'XYZ'));
             node.updateMatrix(); node.updateMatrixWorld(true);
-            let parentGroup = node.parent;
-            while (parentGroup && parentGroup.type !== 'Scene') {
-                if (parentGroup.userData.isComposite) rebuildCSG(parentGroup);
-                parentGroup = parentGroup.parent;
-            }
+            rebuildAncestors(node);
             if (transformControl.object) transformControl.updateMatrixWorld();
             syncTransformInputs();
             updateDimensions();
@@ -2823,78 +2815,170 @@ function performAlign(axis, valType, targetVal) {
 
 
 
-function evaluateGroup(children) {
-    let solids = children.filter(s => !s.userData.isHole);
-    let holes = children.filter(s => s.userData.isHole);
-    
-    if (solids.length === 0) throw new Error("Cannot group only holes. Please include at least one solid.");
-    
+// --- Group booleans ---
+// Groups with more triangles than this are computed in a Web Worker so the page stays
+// responsive; smaller ones run inline, which keeps them instantaneous and synchronous.
+const CSG_WORKER_TRIANGLES = 20000;
+const csgWorkerThreshold = () => (typeof window.HOLODECK_CSG_WORKER_THRESHOLD === 'number' ? window.HOLODECK_CSG_WORKER_THRESHOLD : CSG_WORKER_TRIANGLES);
+
+const triangleCount = geometry => (geometry.index ? geometry.index.count : geometry.attributes.position.count) / 3;
+const groupTriangles = children => children.reduce((n, c) => n + (c.geometry ? triangleCount(c.geometry) : 0), 0);
+
+function partsOf(children) {
     children.forEach(c => c.updateMatrixWorld(true));
-    
-    let baseSolid = solids[0];
-    for (let i = 1; i < solids.length; i++) {
-        const temp = CSG.union(baseSolid, solids[i]);
-        if (temp) {
-            temp.geometry.applyMatrix4(temp.matrix);
-            temp.position.set(0,0,0); temp.rotation.set(0,0,0); temp.scale.set(1,1,1); temp.updateMatrixWorld(true);
-            baseSolid = temp;
-        }
-    }
-    
-    let result = baseSolid;
-    for (let i = 0; i < holes.length; i++) {
-        const temp = CSG.subtract(result, holes[i]);
-        if (temp) {
-            temp.geometry.applyMatrix4(temp.matrix);
-            temp.position.set(0,0,0); temp.rotation.set(0,0,0); temp.scale.set(1,1,1); temp.updateMatrixWorld(true);
-            result = temp;
-        }
-    }
-    
-    const resultGeometry = result.geometry;
-    resultGeometry.computeBoundingBox();
-    const center = new THREE.Vector3(); resultGeometry.boundingBox.getCenter(center);
-    resultGeometry.translate(-center.x, -center.y, -center.z);
-    
-    const newMat = Array.isArray(solids[0].material) ? solids[0].material.map(m => m.clone()) : solids[0].material.clone();
-    const finalMesh = new THREE.Mesh(resultGeometry, newMat);
-    finalMesh.position.copy(center); finalMesh.updateMatrixWorld(true);
-    
-    return finalMesh;
+    return children.map(c => ({ geometry: c.geometry, matrix: c.matrix.toArray(), isHole: !!c.userData.isHole }));
+}
+
+// Wraps a boolean result into the mesh a group is displayed as.
+function finishGroupMesh(children, { geometry, center }) {
+    const first = children.find(s => !s.userData.isHole);
+    const material = Array.isArray(first.material) ? first.material.map(m => m.clone()) : first.material.clone();
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.copy(center); mesh.updateMatrixWorld(true);
+    return mesh;
+}
+
+function evaluateGroup(children) {
+    return finishGroupMesh(children, evaluateParts(THREE, CSG, partsOf(children)));
+}
+
+let csgWorker = null;
+let csgJobs = new Map();
+let csgJobId = 0;
+
+function getCsgWorker() {
+    if (csgWorker) return csgWorker;
+    try {
+        csgWorker = new Worker(new URL('./csg-worker.js', import.meta.url), { type: 'module' });
+    } catch (e) { csgWorker = null; return null; }
+    csgWorker.onmessage = ({ data }) => {
+        const job = csgJobs.get(data.id);
+        if (!job) return;
+        csgJobs.delete(data.id);
+        if (data.error) { job.reject(new Error(data.error)); return; }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
+        if (data.normals) geometry.setAttribute('normal', new THREE.BufferAttribute(data.normals, 3));
+        job.resolve({ geometry, center: new THREE.Vector3().fromArray(data.center) });
+    };
+    csgWorker.onerror = () => {
+        const failed = csgJobs; csgJobs = new Map(); csgWorker = null;
+        failed.forEach(job => job.reject(new Error('The background worker failed to run.')));
+    };
+    return csgWorker;
+}
+
+function setBusy(on) { document.body.classList.toggle('busy', on); }
+
+// Same result as evaluateGroup, computed off the main thread. Falls back to inline if the
+// worker cannot be started (an old browser, or a file:// page).
+async function evaluateGroupAsync(children) {
+    const worker = getCsgWorker();
+    if (!worker) return evaluateGroup(children);
+    const parts = partsOf(children).map(p => {
+        const g = p.geometry.index ? p.geometry.toNonIndexed() : p.geometry;
+        return { positions: Float32Array.from(g.attributes.position.array), normals: Float32Array.from(g.attributes.normal.array), matrix: p.matrix, isHole: p.isHole };
+    });
+    const id = ++csgJobId;
+    setBusy(true);
+    try {
+        const result = await new Promise((resolve, reject) => {
+            csgJobs.set(id, { resolve, reject });
+            worker.postMessage({ id, parts }, parts.flatMap(p => [p.positions.buffer, p.normals.buffer]));
+        });
+        return finishGroupMesh(children, result);
+    } finally { setBusy(csgJobs.size > 0); }
+}
+
+const useWorkerFor = children => groupTriangles(children) > csgWorkerThreshold();
+
+function applyRebuiltGeometry(mesh, newMesh) {
+    // three-csg-ts evaluates from each mesh's *local* matrix, and rebuildCSG always
+    // runs with the children already parented to `mesh`, so the result is already in
+    // mesh-local space — re-basing it against matrixWorld would shift the group by
+    // -position on every rebuild. Only the core's re-centring has to be undone.
+    newMesh.updateMatrix();
+    newMesh.geometry.applyMatrix4(newMesh.matrix);
+    if (mesh.geometry) mesh.geometry.dispose();
+    mesh.geometry = newMesh.geometry;
+    mesh.userData.baseSize = measureBaseSize(mesh.geometry);
+    delete mesh.userData.csgError;
+}
+
+function reportCsgFailure(mesh, e) {
+    console.error('CSG rebuild failed:', e);
+    mesh.userData.csgError = e.message;
+    updateStatus(`⚠ "${mesh.name}" could not be recomputed (${e.message}) — its previous shape was kept.`);
 }
 
 function rebuildCSG(mesh) {
     if (!mesh.userData.isComposite || !mesh.userData.groupChildren) return;
-    
+
     mesh.userData.groupChildren.forEach(child => {
         if (child.userData.isComposite) rebuildCSG(child);
     });
-    
+
     try {
         const newMesh = evaluateGroup(mesh.userData.groupChildren);
-        if (newMesh) {
-            // three-csg-ts evaluates from each mesh's *local* matrix, and rebuildCSG always
-            // runs with the children already parented to `mesh`, so the result is already in
-            // mesh-local space — re-basing it against matrixWorld would shift the group by
-            // -position on every rebuild. Only evaluateGroup's re-centring has to be undone.
-            newMesh.updateMatrix();
-            newMesh.geometry.applyMatrix4(newMesh.matrix);
-
-            if (mesh.geometry) mesh.geometry.dispose();
-            mesh.geometry = newMesh.geometry;
-            mesh.userData.baseSize = measureBaseSize(mesh.geometry);
-        }
-    } catch (e) { console.error('CSG rebuild failed:', e); }
+        if (newMesh) applyRebuiltGeometry(mesh, newMesh);
+    } catch (e) { reportCsgFailure(mesh, e); }
 }
 
-function groupShapes() {
+async function rebuildCSGAsync(mesh) {
+    if (!mesh.userData.isComposite || !mesh.userData.groupChildren) return;
+    const version = (mesh.userData.csgVersion = (mesh.userData.csgVersion || 0) + 1);
+    for (const child of mesh.userData.groupChildren) if (child.userData.isComposite) await rebuildCSGAsync(child);
+    try {
+        const newMesh = await evaluateGroupAsync(mesh.userData.groupChildren);
+        if (mesh.userData.csgVersion !== version) { newMesh.geometry.dispose(); return; } // a newer edit superseded this one
+        applyRebuiltGeometry(mesh, newMesh);
+    } catch (e) { reportCsgFailure(mesh, e); }
+}
+
+// Re-cuts every group above `node` after it changed. Small models finish before this returns;
+// a large one continues in the background (and resolves when done).
+function rebuildAncestors(node) {
+    const chain = [];
+    for (let g = node.parent; g && g.type !== 'Scene'; g = g.parent) if (g.userData.isComposite) chain.push(g);
+    if (chain.length === 0) return Promise.resolve();
+    const outermost = chain[chain.length - 1];
+    if (!useWorkerFor(outermost.userData.groupChildren)) { chain.forEach(rebuildCSG); return Promise.resolve(); }
+    updateStatus('Recomputing group in the background…');
+    return (async () => {
+        for (const g of chain) await rebuildCSGAsync(g);
+        updateDimensions();
+        if (!/could not be recomputed/.test(document.getElementById('status-bar').innerText)) updateStatus('Group recomputed.');
+    })();
+}
+
+// Notes about imported parts that are unlikely to survive a boolean cleanly.
+function groupHealthWarning(shapesToGroup) {
+    const bad = [];
+    const check = m => {
+        if (m.userData.type === 'imported' && importedMeshes.has(m.userData.importId)) {
+            const h = analyzeMesh(importedMeshes.get(m.userData.importId));
+            if (!h.watertight || h.inconsistentEdges) bad.push(m.name);
+        }
+        if (m.userData.isComposite && m.userData.groupChildren) m.userData.groupChildren.forEach(check);
+    };
+    shapesToGroup.forEach(check);
+    return bad.length ? ` ⚠ ${bad.join(', ')} ${bad.length > 1 ? 'are' : 'is'} not a clean closed mesh, so the result may have gaps.` : '';
+}
+
+async function groupShapes() {
     if (selectedShapes.length < 2) { updateStatus('Select at least 2 shapes to group'); return; }
     transformControl.detach();
-    
+
     try {
         const shapesToGroup = [...selectedShapes];
-        const resultMesh = evaluateGroup(shapesToGroup);
-        
+        let resultMesh;
+        if (useWorkerFor(shapesToGroup)) {
+            updateStatus(`Grouping ${groupTriangles(shapesToGroup).toLocaleString()} triangles in the background…`);
+            resultMesh = await evaluateGroupAsync(shapesToGroup);
+        } else {
+            resultMesh = evaluateGroup(shapesToGroup);
+        }
+
         if (resultMesh) {
             resultMesh.userData = {
                 type: 'group', isComposite: true, isHole: false, isHardware: false,
@@ -2903,7 +2987,7 @@ function groupShapes() {
             };
             resultMesh.uuid = THREE.MathUtils.generateUUID();
             resultMesh.name = "Group " + (shapes.length + 1);
-            
+
             shapesToGroup.forEach(s => {
                 const invMatrix = new THREE.Matrix4().copy(resultMesh.matrixWorld).invert();
                 s.applyMatrix4(invMatrix);
@@ -2912,16 +2996,18 @@ function groupShapes() {
                 scene.remove(s);
                 shapes = shapes.filter(x => x !== s);
             });
-            
+
             scene.add(resultMesh);
             shapes.push(resultMesh);
             selectShape(resultMesh);
-            updateStatus('Grouped shapes');
+            updateStatus('Grouped shapes' + groupHealthWarning(shapesToGroup));
             historyManager.saveState();
         }
     } catch (e) {
         updateStatus(`Grouping failed: ${e.message}`);
         console.error(e);
+        // The parts were detached from the gizmo but left untouched; put it back.
+        if (selectedShape && !isAlignMode) transformControl.attach(selectedShape);
     }
 }
 
@@ -3543,11 +3629,7 @@ function updateSelectedHardwareProfile() {
     target.userData.baseSize = measureBaseSize(newGeom);
 
     // If this part lives inside a group, the group's solid has to be re-cut around it.
-    let parentGroup = target.parent;
-    while (parentGroup && parentGroup.type !== 'Scene') {
-        if (parentGroup.userData.isComposite) rebuildCSG(parentGroup);
-        parentGroup = parentGroup.parent;
-    }
+    rebuildAncestors(target);
 
     // Refresh properties panel to show new dimensions
     selectPropertyNode(target);
