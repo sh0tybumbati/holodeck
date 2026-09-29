@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Cone / cylinder tool**: The separate cone and cylinder buttons are merged into one shape with **Top R**, **Height** and **Bottom R** fields in the properties panel (mm). Equal radii make a cylinder, a zero radius a cone, anything else a truncated cone. Projects saved with the old separate shapes still open, at their old size.
+- **Bevel with steps**: Cubes and cones have *Bevel (mm)* and *Bevel steps* fields (also in the toolbar dialog). The bevel reaches that far along each face; 1 step is a flat chamfer and more steps round the edge progressively. On a cone it bevels the rim where each flat end meets the side. Both are stored as parameters, so they survive undo, save and load; files with the earlier fillet/chamfer setting load unchanged.
 - **Keyboard shortcut sheet**: press `?` (or the keyboard button) for the full list. Also new: `Ctrl+A` selects everything.
 - **Autosave and recovery**: work is autosaved to the browser's IndexedDB two seconds after each change; if a session ends unsaved, the next launch offers to restore it (or discard it). Saving to a file clears the autosave.
 - **Unsaved-changes guard**: the tab title gets a `•` and the browser asks before you close or reload with unsaved work.

@@ -5,7 +5,7 @@ import { kvGet, kvPut, kvDelete } from './storage.js';
 import { EXPORT_FORMATS, countTriangles } from './exporters.js';
 import { evaluateParts } from './csg-core.js';
 import { analyzeMesh, repairMesh, describeHealth } from './meshtools.js';
-import { roundedBox, revolveProfile, mirrorPositions, flipWinding, signedVolume } from './modeling.js';
+import { revolveProfile, mirrorPositions, flipWinding, signedVolume, beveledBox, normalizeEdge, frustum } from './modeling.js';
 
 // Basic Three.js setup
 let scene, camera, renderer, controls, transformControl, selectionBox;
@@ -1173,6 +1173,7 @@ function setupToolbar() {
     bindClick('center-selection', centerSelection);
     bindClick('snap-toggle', () => setSnapEnabled(!snapEnabled)); bindClick('measure-tool', toggleMeasureMode);
     setupTransformInputs();
+    setupShapeInputs();
     bindClick('duplicate-selected', duplicateSelection); bindClick('mirror-selected', mirrorSelection);
     bindClick('array-selected', arraySelection); bindClick('round-edges', roundEdges); bindClick('sketch-tool', toggleSketchMode);
     
@@ -1754,10 +1755,13 @@ async function arraySelection() {
     updateStatus(`Array created: ${created.length} new shape(s).`);
 }
 
-// Fillet / chamfer for cubes. Stored as parameters on the shape (userData.edge), so the
-// rounded geometry is regenerated on undo and load and nothing has to be saved as vertices.
-function buildRoundedCubeGeometry(edge) {
-    const { positions, normals } = roundedBox(2, 2, 2, edge.radius, edge.style, edge.segments);
+// Cube and cone are parametric: their geometry is rebuilt from userData on undo and load, so
+// nothing has to be saved as vertices. `edge` is the bevel { radius (cm), steps }, and a cone
+// also carries { top, bottom, height } (cm). One cone shape covers cones, cylinders and
+// frustums: a cylinder is just equal radii.
+const DEFAULT_CONE = { top: 0.5, bottom: 1.5, height: 2 };
+
+function meshFromSoup({ positions, normals }) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     if (normals) g.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
@@ -1766,29 +1770,12 @@ function buildRoundedCubeGeometry(edge) {
     return g;
 }
 
-async function roundEdges() {
-    const node = (currentPropertyNode && selectedShapes.length <= 1 ? currentPropertyNode : null)
-        || (selectedShapes.length === 1 ? selectedShapes[0] : null);
-    if (!node || node.userData.type !== 'cube' || node.userData.isComposite) {
-        updateStatus('Select a single cube (or pick one inside a group) to round its edges.');
-        return;
-    }
-    const meanScale = (node.scale.x + node.scale.y + node.scale.z) / 3;
-    const cur = node.userData.edge;
-    const v = await showFormDialog({
-        title: 'Round or chamfer edges', confirmLabel: 'Apply',
-        message: 'Sizes are approximate on a box that has been stretched unevenly.',
-        fields: [
-            { id: 'style', label: 'Edge style', type: 'select', value: cur ? cur.style : 'fillet',
-              options: [['fillet', 'Fillet (rounded)'], ['chamfer', 'Chamfer (bevelled)'], ['none', 'Sharp (remove)']] },
-            { id: 'radius', label: 'Size', unit: 'mm', type: 'number', min: 0.1, step: 0.5,
-              value: cur ? +(cur.radius * meanScale * 10).toFixed(2) : 2, showIf: f => f.style !== 'none' },
-            { id: 'segments', label: 'Smoothness', type: 'number', min: 2, max: 12, step: 1, value: cur ? cur.segments : 5, showIf: f => f.style === 'fillet' }
-        ]
-    });
-    if (!v) return;
-    node.userData.edge = v.style === 'none' ? null
-        : { style: v.style, radius: v.radius / 10 / meanScale, segments: Math.round(v.segments) || 5 };
+const buildBeveledCubeGeometry = edge => meshFromSoup(beveledBox(2, 2, 2, edge));
+const buildConeGeometry = (cone, edge) => meshFromSoup(frustum(cone.top, cone.bottom, cone.height, edge));
+
+// Rebuilds a parametric leaf's geometry after its parameters changed, then everything that
+// depends on it: the enclosing groups, the panel, the dimension labels and history.
+function regenerateLeaf(node) {
     const geometry = rebuildLeafGeometry(node.userData);
     if (node.geometry) node.geometry.dispose();
     node.geometry = geometry;
@@ -1798,7 +1785,92 @@ async function roundEdges() {
     selectPropertyNode(node);
     updateDimensions();
     historyManager.saveState();
-    updateStatus(v.style === 'none' ? 'Edges sharpened.' : `Applied ${v.style} of ${v.radius} mm.`);
+}
+
+const isBevelable = node => !!node && !node.userData.isComposite && (node.userData.type === 'cube' || node.userData.type === 'cone');
+const meanScaleOf = node => (node.scale.x + node.scale.y + node.scale.z) / 3;
+
+// size is in mm; steps 1 is a flat chamfer, more are progressively rounder.
+function applyBevel(node, sizeMm, steps) {
+    node.userData.edge = sizeMm > 0 ? { radius: sizeMm / 10 / meanScaleOf(node), steps: Math.max(1, Math.round(steps) || 1) } : null;
+    regenerateLeaf(node);
+    updateStatus(sizeMm > 0 ? `Beveled: ${sizeMm} mm in ${node.userData.edge.steps} step${node.userData.edge.steps === 1 ? ' (chamfer)' : 's'}.` : 'Bevel removed.');
+}
+
+// Radii and height in mm.
+function applyCone(node, { top, bottom, height }) {
+    if (![top, bottom, height].every(v => isFinite(v) && v >= 0) || height <= 0 || (top <= 0 && bottom <= 0)) {
+        updateStatus('A cone needs a height above zero and at least one radius above zero.');
+        selectPropertyNode(node);
+        return;
+    }
+    node.userData.cone = { top: top / 10, bottom: bottom / 10, height: height / 10 };
+    regenerateLeaf(node);
+    const kind = top === bottom ? 'Cylinder' : (top === 0 || bottom === 0) ? 'Cone' : 'Truncated cone';
+    updateStatus(`${kind}: top R ${top} mm, bottom R ${bottom} mm, height ${height} mm.`);
+}
+
+async function roundEdges() {
+    const node = (currentPropertyNode && selectedShapes.length <= 1 ? currentPropertyNode : null)
+        || (selectedShapes.length === 1 ? selectedShapes[0] : null);
+    if (!isBevelable(node)) {
+        updateStatus('Select a single cube or cone (or pick one inside a group) to bevel its edges.');
+        return;
+    }
+    const cur = normalizeEdge(node.userData.edge);
+    const v = await showFormDialog({
+        title: 'Bevel edges', confirmLabel: 'Apply',
+        message: node.userData.type === 'cone' ? 'Bevels the rim where each flat end meets the side.' : 'Bevels all twelve edges.',
+        fields: [
+            { id: 'size', label: 'Bevel radius', unit: 'mm', type: 'number', min: 0, step: 0.5,
+              value: cur ? +(cur.radius * meanScaleOf(node) * 10).toFixed(2) : 2, hint: '0 removes the bevel. Approximate on a shape that has been stretched unevenly.' },
+            { id: 'steps', label: 'Steps', type: 'number', min: 1, max: 16, step: 1, value: cur ? cur.steps : 1,
+              hint: '1 is a flat chamfer; more steps make the edge progressively rounder.' }
+        ]
+    });
+    if (!v) return;
+    applyBevel(node, v.size, v.steps);
+}
+
+// The cone and bevel rows of the properties panel.
+function setupShapeInputs() {
+    const num = id => { const raw = document.getElementById(id).value.trim(); const v = isNaN(Number(raw)) ? evaluateExpression(raw, getResolvedVariables()) : Number(raw); return v === null ? NaN : v; };
+    ['obj-cone-top', 'obj-cone-height', 'obj-cone-bottom'].forEach(id => {
+        const el = document.getElementById(id);
+        el.addEventListener('keydown', e => { if (e.key === 'Enter') el.blur(); });
+        el.addEventListener('change', () => {
+            const node = currentPropertyNode;
+            if (!node || node.userData.type !== 'cone') return;
+            applyCone(node, { top: num('obj-cone-top'), height: num('obj-cone-height'), bottom: num('obj-cone-bottom') });
+        });
+    });
+    ['obj-bevel-size', 'obj-bevel-steps'].forEach(id => {
+        const el = document.getElementById(id);
+        el.addEventListener('keydown', e => { if (e.key === 'Enter') el.blur(); });
+        el.addEventListener('change', () => {
+            const node = currentPropertyNode;
+            if (!isBevelable(node)) return;
+            const size = num('obj-bevel-size'), steps = num('obj-bevel-steps');
+            if (!isFinite(size) || size < 0) { selectPropertyNode(node); updateStatus('The bevel radius must be a number, 0 or more.'); return; }
+            applyBevel(node, size, isFinite(steps) ? steps : 1);
+        });
+    });
+}
+
+function syncShapeInputs(node) {
+    const isCone = node.userData.type === 'cone' && !node.userData.isComposite;
+    document.getElementById('cone-properties').style.display = isCone ? 'flex' : 'none';
+    document.getElementById('bevel-properties').style.display = isBevelable(node) ? 'flex' : 'none';
+    const set = (id, v) => { const el = document.getElementById(id); if (el && document.activeElement !== el) el.value = String(v); };
+    if (isCone) {
+        const c = coneParams(node.userData);
+        set('obj-cone-top', +(c.top * 10).toFixed(3)); set('obj-cone-height', +(c.height * 10).toFixed(3)); set('obj-cone-bottom', +(c.bottom * 10).toFixed(3));
+    }
+    if (isBevelable(node)) {
+        const e = normalizeEdge(node.userData.edge);
+        set('obj-bevel-size', e ? +(e.radius * meanScaleOf(node) * 10).toFixed(3) : 0);
+        set('obj-bevel-steps', e ? e.steps : 1);
+    }
 }
 
 // --- Precision: numeric transform fields, drag readout, snapping, measuring ---
@@ -2043,8 +2115,7 @@ function addShape(type) {
     switch(type) {
         case 'cube': geometry = new THREE.BoxGeometry(2, 2, 2); break;
         case 'sphere': geometry = new THREE.SphereGeometry(1.5, 32, 32); break;
-        case 'cylinder': geometry = new THREE.CylinderGeometry(1, 1, 2, 32); break;
-        case 'cone': geometry = new THREE.ConeGeometry(1.5, 2, 32); break;
+        case 'cone': geometry = buildConeGeometry(DEFAULT_CONE, null); break;
     }
     const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
         color: Math.random() * 0xffffff, transparent: true, opacity: 0.85, roughness: 0.4, metalness: 0.1
@@ -2054,6 +2125,7 @@ function addShape(type) {
     mesh.position.set(Math.round((Math.random() - 0.5) * 4 / worldSnap) * worldSnap, Math.round(1 / worldSnap) * worldSnap, Math.round((Math.random() - 0.5) * 4 / worldSnap) * worldSnap);
     
     mesh.userData = { type: type, originalGeometry: geometry, bindings: {}, isComposite: false, isHole: false };
+    if (type === 'cone') mesh.userData.cone = { ...DEFAULT_CONE };
     mesh.uuid = THREE.MathUtils.generateUUID();
     mesh.name = type.charAt(0).toUpperCase() + type.slice(1) + " " + (shapes.length + 1);
     
@@ -2663,6 +2735,7 @@ function selectPropertyNode(node) {
     };
     setInput('obj-w', 'x'); setInput('obj-h', 'y'); setInput('obj-l', 'z');
     syncTransformInputs();
+    syncShapeInputs(node);
     
     const container = document.getElementById('preview-container');
     if (container.clientWidth > 0 && container.clientHeight > 0 && previewRenderer) {
@@ -3434,6 +3507,7 @@ function serializeShape(mesh) {
             importId: mesh.userData.importId || null,
             importFormat: mesh.userData.importFormat || null,
             edge: mesh.userData.edge ? { ...mesh.userData.edge } : null,
+            cone: mesh.userData.cone ? { ...mesh.userData.cone } : null,
             bindings: mesh.userData.bindings ? { ...mesh.userData.bindings } : {},
             isComposite: !!mesh.userData.isComposite,
             isHole: !!mesh.userData.isHole,
@@ -3490,6 +3564,12 @@ function captureThumbnail() {
 
 // Rebuilds a leaf geometry from its saved userData. Hardware is regenerated from its
 // hwProps by the same code that created it, so a saved NEMA 17 comes back a NEMA 17.
+// Files from before the merge hold separate 'cylinder' and 'cone' shapes with no parameters.
+function coneParams(ud) {
+    if (ud.cone) return ud.cone;
+    return ud.type === 'cylinder' ? { top: 1, bottom: 1, height: 2 } : { top: 0, bottom: 1.5, height: 2 };
+}
+
 function rebuildLeafGeometry(ud) {
     if (ud.type === 'wire' && ud.wirePoints && ud.wirePoints.length > 1) {
         const pts = ud.wirePoints.map(p => new THREE.Vector3().fromArray(p));
@@ -3504,10 +3584,9 @@ function rebuildLeafGeometry(ud) {
         if (geometry) return geometry;
     }
     switch (ud.type) {
-        case 'cube': return ud.edge ? buildRoundedCubeGeometry(ud.edge) : new THREE.BoxGeometry(2, 2, 2);
+        case 'cube': return normalizeEdge(ud.edge) ? buildBeveledCubeGeometry(ud.edge) : new THREE.BoxGeometry(2, 2, 2);
         case 'sphere': return new THREE.SphereGeometry(1.5, 32, 32);
-        case 'cylinder': return new THREE.CylinderGeometry(1, 1, 2, 32);
-        case 'cone': return new THREE.ConeGeometry(1.5, 2, 32);
+        case 'cylinder': case 'cone': return buildConeGeometry(coneParams(ud), ud.edge);
         default: return new THREE.BoxGeometry(2, 2, 2);
     }
 }
@@ -3523,6 +3602,7 @@ function deserializeShape(data) {
     });
 
     const ud = { ...data.userData };
+    if (ud.type === 'cylinder' || (ud.type === 'cone' && !ud.cone)) { ud.cone = { ...coneParams(ud) }; ud.type = 'cone'; }
 
     if (ud.isComposite && ud.groupChildren) {
         const children = ud.groupChildren.map(childData => deserializeShape(childData));
