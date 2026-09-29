@@ -1,0 +1,62 @@
+#!/usr/bin/env node
+// Unit tests for js/modeling.js:  node test/test-modeling.mjs
+import assert from 'node:assert/strict';
+import { roundedBox, revolveProfile, mirrorPositions, flipWinding, signedVolume } from '../js/modeling.js';
+
+let failed = 0;
+function test(name, fn) { try { fn(); console.log('PASS', name); } catch (e) { failed++; console.log('FAIL', name, '\n  ', e.message); } }
+const bounds = p => {
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < p.length; i += 3) for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], p[i + k]); max[k] = Math.max(max[k], p[i + k]); }
+    return { min, max };
+};
+const near = (a, b, e = 1e-4) => Math.abs(a - b) < e;
+
+test('a box with zero radius is the box', () => {
+    const { positions } = roundedBox(2, 4, 6, 0);
+    assert.ok(near(signedVolume(positions), 48));
+});
+test('fillet volume is between a sphere-ish core and the full box, and winds outward', () => {
+    const { positions, normals } = roundedBox(2, 2, 2, 0.5, 'fillet', 6);
+    const v = signedVolume(positions);
+    assert.ok(v > 0 && v < 8 && v > 8 - (1 - Math.PI / 4) * 0.25 * 12 - 0.5, `volume ${v}`);
+    assert.equal(normals.length, positions.length);
+    const b = bounds(positions); assert.deepEqual(b.max.map(x => +x.toFixed(4)), [1, 1, 1]);
+});
+test('chamfer removes the wedge along each edge', () => {
+    const r = 0.4, { positions, normals } = roundedBox(2, 2, 2, r, 'chamfer');
+    assert.equal(normals, null);
+    const v = signedVolume(positions);
+    const edgeWedges = 12 * (r * r / 2) * (2 - 2 * r); // 12 edges, each a triangular prism
+    // The straight prisms are removed exactly; the corner facets take a bit more, but never
+    // more than a full r-sized wedge of edge length at each of the 12 edge ends... bounded loosely.
+    assert.ok(v < 8 - edgeWedges + 1e-3 && v > 8 - edgeWedges - 12 * (r * r / 2) * 2 * r, `volume ${v}`);
+});
+test('radius is clamped so the box never inverts', () => {
+    const { positions } = roundedBox(2, 2, 2, 50, 'fillet', 4);
+    assert.ok(signedVolume(positions) > 0);
+});
+test('revolving a rectangle makes a cylinder of the right volume', () => {
+    const p = revolveProfile([[0, 0], [2, 0], [2, 5], [0, 5]], 256);
+    const v = signedVolume(p);
+    assert.ok(Math.abs(v - Math.PI * 4 * 5) / (Math.PI * 20) < 0.01, `volume ${v}`);
+});
+test('revolving a profile off the axis makes a ring (annulus) and stays outward-wound', () => {
+    const p = revolveProfile([[1, 0], [2, 0], [2, 1], [1, 1]], 256);
+    assert.ok(Math.abs(signedVolume(p) - Math.PI * (4 - 1)) / (Math.PI * 3) < 0.01);
+});
+test('revolving a profile that crosses the axis is rejected', () => {
+    assert.throws(() => revolveProfile([[-1, 0], [1, 0], [1, 1]]), /crosses the axis/);
+});
+test('mirror reflects and keeps triangles outward-wound', () => {
+    const { positions } = roundedBox(2, 2, 2, 0.3);
+    const shifted = Float32Array.from(positions, (v, i) => (i % 3 === 0 ? v + 5 : v));
+    const m = mirrorPositions(shifted, 'x');
+    assert.ok(near(bounds(m).min[0], -6) && near(bounds(m).max[0], -4));
+    assert.ok(near(signedVolume(m), signedVolume(shifted)));
+});
+test('flipWinding negates the volume', () => {
+    const { positions } = roundedBox(1, 1, 1, 0);
+    assert.ok(near(signedVolume(flipWinding(positions)), -1));
+});
+process.exit(failed ? 1 : 0);

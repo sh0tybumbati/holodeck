@@ -447,20 +447,27 @@ async function run() {
     // 13. Importing. A model goes in through the real file input, so this covers the parser,
     //     the unit conversion, and the save/undo round trip of geometry that no primitive
     //     type can regenerate.
+    // Waits for a form dialog, sets fields by id, then confirms (or cancels) it.
+    async function driveDialog(options = {}, { cancel = false } = {}) {
+        for (let i = 0; i < 40 && !byId('dlg-ok'); i++) await new Promise(r => setTimeout(r, 50));
+        if (!byId('dlg-ok')) return false;
+        for (const [id, value] of Object.entries(options)) {
+            const el = byId('dlg-' + id);
+            if (el.type === 'checkbox') el.checked = value; else el.value = value;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        byId(cancel ? 'dlg-cancel' : 'dlg-ok').click();
+        await new Promise(r => setTimeout(r, 60));
+        return true;
+    }
     async function importViaInput(name, content, options = {}, { cancel = false } = {}) {
+        options = { units: 'mm', up: 'y', recenter: true, ...options }; // the dialog remembers its last answers
         const input = byId('file-import');
         const dt = new DataTransfer();
         dt.items.add(new File([content], name));
         input.files = dt.files;
         input.dispatchEvent(new Event('change', { bubbles: true }));
-        for (let i = 0; i < 40 && !byId('dlg-ok'); i++) await new Promise(r => setTimeout(r, 50));
-        if (!byId('dlg-ok')) return false;
-        for (const [id, value] of Object.entries(options)) {
-            const el = byId('dlg-' + id);
-            el.value = value;
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-        byId(cancel ? 'dlg-cancel' : 'dlg-ok').click();
+        if (!await driveDialog(options, { cancel })) return false;
         for (let i = 0; i < 40 && !/Imported|Import failed|cancelled/.test(status()); i++) await new Promise(r => setTimeout(r, 50));
         return true;
     }
@@ -540,6 +547,102 @@ async function run() {
     check('import-dialog-cancel-adds-nothing', /cancelled/.test(cancelStatus) && (await exportSignature()) === null, `status="${cancelStatus}"`);
 
     check('no-uncaught-errors-after-import', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 14. Modelling tools.
+    const sigOf = async () => exportSignature();
+    clearScene();
+    await importViaInput('far.stl', asciiStl(box(20, 10, 30)), { recenter: false }); // x 100..120mm, z 100..130mm
+    const farOne = await sigOf();
+    check('import-without-recentring-keeps-file-coordinates',
+        farOne && farOne.bounds === '[100.000,100.000,100.000]..[120.000,110.000,130.000]', fmt(farOne));
+
+    const keys = (key, extra = {}) => window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, ...extra }));
+    keys('d', { ctrlKey: true });
+    const dup = await sigOf();
+    check('duplicate-adds-an-offset-copy', dup && dup.facets === 24 && dup.bounds !== farOne.bounds, fmt(dup));
+
+    clearScene();
+    await importViaInput('far.stl', asciiStl(box(20, 10, 30)), { recenter: false });
+    byId('mirror-selected').click();
+    await driveDialog({ axis: 'x' });
+    const mirrored = await sigOf();
+    check('mirror-adds-a-reflected-copy', mirrored && mirrored.facets === 24
+        && mirrored.bounds === '[-120.000,100.000,100.000]..[120.000,110.000,130.000]', fmt(mirrored));
+
+    clearScene();
+    await importViaInput('far.stl', asciiStl(box(20, 10, 30)), { recenter: false });
+    byId('array-selected').click();
+    await driveDialog({ kind: 'polar', count: 4, axis: 'y', angle: 360 });
+    const polar = await sigOf();
+    check('polar-array-spreads-copies-round-the-axis', polar && polar.facets === 48
+        && polar.bounds === '[-130.000,100.000,-130.000]..[130.000,110.000,130.000]', fmt(polar));
+
+    clearScene();
+    await importViaInput('block.stl', asciiStl(box(20, 10, 30)));
+    byId('array-selected').click();
+    await driveDialog({ kind: 'linear', count: 3, dx: 30, dy: 0, dz: 0 });
+    const linear = await sigOf();
+    check('linear-array', linear && linear.facets === 36 && linear.bounds === '[-10.000,0.000,-15.000]..[70.000,10.000,15.000]', fmt(linear));
+
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    byId('round-edges').click();
+    await driveDialog({ style: 'chamfer', radius: 2 });
+    const chamfered = await sigOf();
+    check('chamfer-edges-of-a-cube', chamfered && chamfered.facets === 108, fmt(chamfered));
+    const chamferSize = chamfered.bounds.match(/\[(.*?)\]\.\.\[(.*?)\]/).slice(1).map(x => x.split(',').map(Number));
+    check('chamfer-keeps-the-cube-size', chamferSize[1].every((v, i) => Math.abs(v - chamferSize[0][i] - 20) < 0.01), chamfered.bounds);
+    document.querySelector('[data-shape="sphere"]').click();
+    byId('btn-undo').click();
+    check('rounded-edges-survive-undo', sameMesh(await sigOf(), chamfered), 'after undo');
+    const savedEdge = await saveAndParse();
+    const lastState = JSON.stringify(savedEdge.undoStack[savedEdge.undoStack.length - 1]);
+    check('edge-parameters-are-saved-not-vertices', lastState.includes('"chamfer"') && !lastState.includes('"importId":"'),
+        `state has chamfer=${lastState.includes('"chamfer"')}`);
+    check('save-only-embeds-meshes-history-still-uses',
+        Object.keys(savedEdge.assets || {}).length > 0 && Object.keys(savedEdge.assets || {}).every(id => JSON.stringify(savedEdge.undoStack).includes(id)),
+        `assets=${Object.keys(savedEdge.assets || {}).length}`);
+    boxSelectAll();
+    byId('round-edges').click();
+    await driveDialog({ style: 'none' });
+    const sharp = await sigOf();
+    check('sharp-removes-the-rounding', sharp && sharp.facets === 12, fmt(sharp));
+
+    // Sketch: click ground points chosen through a replica of the app camera.
+    const clickGround = (x, z) => {
+        const cam = window.__camera; // the camera the app last rendered with (see run-regression.mjs)
+        cam.updateMatrixWorld(true);
+        cam.matrixWorldInverse.copy(cam.matrixWorld).invert(); // the renderer only refreshes this at draw time
+        const v = new THREE.Vector3(x, 0, z).project(cam);
+        const canvas = document.querySelector('#canvas-container canvas');
+        canvas.dispatchEvent(new PointerEvent('pointerdown', {
+            clientX: (v.x + 1) / 2 * window.innerWidth, clientY: (1 - v.y) / 2 * window.innerHeight, bubbles: true }));
+        window.dispatchEvent(new PointerEvent('pointerup', { clientX: 0, clientY: 0, bubbles: true }));
+    };
+    clearScene();
+    await new Promise(r => setTimeout(r, 900)); // let any camera centring animation finish
+    byId('sketch-tool').click();
+    [[3, 2], [6, 2], [6, 5], [3, 5]].forEach(([x, z]) => clickGround(x, z));
+    keys('Enter');
+    await driveDialog({ op: 'extrude', depth: 10 });
+    const extruded = await sigOf();
+    check('sketch-extrude', extruded && extruded.facets === 12 && extruded.bounds === '[30.000,0.000,20.000]..[60.000,10.000,50.000]', fmt(extruded));
+
+    clearScene();
+    byId('sketch-tool').click();
+    [[2, 0], [4, 0], [4, -6], [2, -6]].forEach(([x, z]) => clickGround(x, z));
+    keys('Enter');
+    await driveDialog({ op: 'revolve', segments: 32 });
+    const revolved = await sigOf();
+    check('sketch-revolve-makes-a-ring', revolved && revolved.bounds === '[-40.000,0.000,-40.000]..[40.000,60.000,40.000]' && revolved.facets === 4 * 32 * 2, fmt(revolved));
+
+    clearScene();
+    byId('sketch-tool').click();
+    clickGround(1, 1); clickGround(4, 1);
+    keys('Escape');
+    check('sketch-escape-cancels', /Sketch cancelled/.test(status()) && !byId('sketch-tool').classList.contains('active'), status());
+
+    check('no-uncaught-errors-after-modelling', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }

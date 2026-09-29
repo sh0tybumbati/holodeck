@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Import options**: Importing now asks for the file's units (mm/cm/in/m), up axis (Y or Z up), the extrude depth for SVG, and whether to centre the model on the grid; answers are remembered. Dragging files over the page shows a drop overlay.
+- **Modelling tools**: *Duplicate* (Ctrl+D), *Mirror* a copy across a world plane, linear and polar *Arrays* (the copies stay independent parametric shapes and are billed on the BOM), *Fillet/Chamfer* for a cube's edges (stored as parameters, so it survives undo/save like any primitive), and a *Sketch* tool: click a polygon onto the ground, then extrude it upward or revolve it around the Y axis. Results of mirror/sketch are stored like imported meshes.
 - **Import STL / OBJ / SVG**: New import button (and drag-and-drop anywhere on the page). STL is read in binary or ASCII form — detected by file size, not by the `solid` header binary files also use; OBJ handles quads/n-gons, negative indices and `v/vt/vn` faces; SVG paths are extruded 5 mm with holes kept. Meshes are converted from mm to the scene's cm, centred and stood on the grid. Imported vertices are stored once, outside the undo history, and embedded in the `.holo` file as `assets` (format 2.2; older files still load). Files over 1,000,000 triangles are refused with a message. Dropping a `.holo` file now opens it.
 - **Themes**: Introduced two new aesthetic themes: `Amber CRT` (classic amber terminal look) and `Matrix` (green-on-black). These join the existing `Blueprint` and `Holodeck` themes.
 - **Math & Equations in Properties**: The properties panel now fully evaluates mathematical expressions (powered by `math.js`).
@@ -27,6 +29,8 @@ All notable changes to this project will be documented in this file.
 - **Camera Centering**: Added functionality to instantly center and focus the camera on a selected object.
 
 ### Changed
+- **Layout**: The creation sidebar now scrolls instead of growing into the variables panel, and on mid-size screens (770–1500px) the tool row sits beneath the file toolbar rather than colliding with it.
+- **Saving**: A `.holo` file only embeds imported meshes that its history still refers to.
 - **ViewCube Text**: Updated ViewCube faces to use single-letter abbreviations (`F`, `B`, `T`, `Bt`, `L`, `R`) and increased the font size by 3x for readability.
 - **ViewCube Colors**: ViewCube faces and hover-states now dynamically sync to match the colors of the currently selected theme.
 - **Camera Panning in Align Mode**: Completely decoupled pointer-down selection logic while in Align/Distribute modes. Users can now freely drag on the background or over objects to orbit the camera without losing their selection or accidentally triggering a gizmo.

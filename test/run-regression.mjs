@@ -14,7 +14,8 @@
 import { createServer } from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { findBrowser, browserArgs } from './browser-utils.mjs';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,28 +23,10 @@ import { fileURLToPath } from 'node:url';
 const ROOT = normalize(join(fileURLToPath(import.meta.url), '..', '..'));
 const RUN_TIMEOUT_MS = 180000;
 
-const BROWSERS = [
-    process.env.HOLODECK_BROWSER,
-    '/usr/bin/brave', '/usr/bin/brave-browser', '/usr/bin/chromium',
-    '/usr/bin/google-chrome-stable', '/usr/bin/google-chrome',
-    ...(process.env.PLAYWRIGHT_BROWSERS_PATH ? readdirSync(process.env.PLAYWRIGHT_BROWSERS_PATH)
-        .filter(d => d.startsWith('chromium-'))
-        .map(d => join(process.env.PLAYWRIGHT_BROWSERS_PATH, d, 'chrome-linux', 'chrome')) : [])
-].filter(Boolean);
-
 const MIME = {
     '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
     '.css': 'text/css', '.json': 'application/json'
 };
-
-function findBrowser() {
-    const found = BROWSERS.find(p => existsSync(p));
-    if (!found) {
-        console.error('No Chromium-family browser found. Looked in:\n  ' + BROWSERS.join('\n  '));
-        process.exit(2);
-    }
-    return found;
-}
 
 let resolveResults;
 const resultsPromise = new Promise(resolve => { resolveResults = resolve; });
@@ -77,6 +60,8 @@ const server = createServer(async (req, res) => {
                 + '  THREE.WebGLRenderer = function () {\n'
                 + '    var r = new Real(...arguments);\n'
                 + '    window.__renderers.push(r);\n'
+                + '    var render = r.render;\n'
+                + '    r.render = function (s, c) { if (c.isPerspectiveCamera && c.far === 1000 && c.near === 0.1 && r.domElement.parentElement && r.domElement.parentElement.id === \'canvas-container\') window.__camera = c; return render.apply(r, arguments); };\n'
                 + '    return r;\n'
                 + '  };\n'
                 + '}());</script>\n';
@@ -115,12 +100,7 @@ const port = server.address().port;
 const profileDir = await mkdtemp(join(tmpdir(), 'holodeck-test-'));
 
 const browser = spawn(findBrowser(), [
-    '--headless=new', '--disable-gpu', '--use-angle=swiftshader',
-    '--enable-unsafe-swiftshader', '--no-sandbox',
-    `--user-data-dir=${profileDir}`,
-    // Sandboxed machines reach the CDN only through a proxy, which Chromium does not read
-    // from the environment on its own.
-    ...(process.env.HTTPS_PROXY ? [`--proxy-server=${process.env.HTTPS_PROXY}`, '--proxy-bypass-list=127.0.0.1;localhost'] : []),
+    ...browserArgs(profileDir),
     `http://127.0.0.1:${port}/index.html`
 ], { stdio: 'ignore' });
 

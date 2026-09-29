@@ -1,6 +1,7 @@
 import { CSG } from 'https://cdn.jsdelivr.net/npm/three-csg-ts@3.1.11/+esm';
 import { importFile, importFormatOf, convertImported, UNIT_MM, ImportError, encodePositions, decodePositions } from './importers.js';
 import { showFormDialog, loadPrefs, savePrefs } from './ui.js';
+import { roundedBox, revolveProfile, mirrorPositions, flipWinding, signedVolume } from './modeling.js';
 
 // Basic Three.js setup
 let scene, camera, renderer, controls, transformControl, selectionBox;
@@ -68,6 +69,13 @@ let isWiringMode = false;
 let wirePoints = [];
 let wirePreviewLine = null;
 let wirePreviewSphere = null;
+
+// Sketch tool state
+let isSketchMode = false;
+let sketchPoints = [];
+let sketchLine = null;
+
+let cloneShape = null; // deepCloneShape, hoisted out of setupToolbar for the modelling tools
 
 // BOM state
 let bomItems = [];
@@ -1117,6 +1125,7 @@ function setupToolbar() {
     bindClick('add-screw', () => addHardware('screw'));
     bindClick('wire-tool', () => {
         isWiringMode = !isWiringMode;
+        if (isWiringMode && isSketchMode) cancelSketch(true);
         if (isWiringMode) {
             wirePoints = [];
             updateStatus('Wire Mode: Click points to route wire. Press Enter to finish, Esc to cancel.');
@@ -1148,6 +1157,8 @@ function setupToolbar() {
     bindClick('distribute-shapes', toggleDistributeMode);
     bindClick('align-mode', toggleAlignMode); bindClick('projection-toggle', toggleProjection);
     bindClick('center-selection', centerSelection);
+    bindClick('duplicate-selected', duplicateSelection); bindClick('mirror-selected', mirrorSelection);
+    bindClick('array-selected', arraySelection); bindClick('round-edges', roundEdges); bindClick('sketch-tool', toggleSketchMode);
     
     document.getElementById('snap-precision')?.addEventListener('change', (e) => { snapPrecision = parseFloat(e.target.value); updateTransformSnap(); });
 
@@ -1158,7 +1169,7 @@ function setupToolbar() {
         const data = JSON.stringify({
             version: "2.2",
             thumbnail: captureThumbnail(),
-            assets: serializeImportedMeshes(),
+            assets: serializeImportedMeshes([historyManager.undoStack, historyManager.redoStack]),
             undoStack: historyManager.undoStack,
             redoStack: historyManager.redoStack
         });
@@ -1257,11 +1268,14 @@ function setupToolbar() {
         return clone;
     }
 
+    cloneShape = deepCloneShape;
+
     window.addEventListener('keydown', (e) => {
         const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT';
         
         if (e.key === 'Escape') {
-            if (isWiringMode) cancelWire();
+            if (isSketchMode) cancelSketch();
+            else if (isWiringMode) cancelWire();
             else if (isAlignMode) toggleAlignMode();
             else if (isDistributeMode) toggleDistributeMode();
             else {
@@ -1273,6 +1287,7 @@ function setupToolbar() {
             }
         }
         
+        if (e.key === 'Enter' && isSketchMode) finishSketch();
         if (e.key === 'Enter' && isWiringMode) {
             if (wirePoints.length > 1) finalizeWire();
             else cancelWire();
@@ -1283,6 +1298,7 @@ function setupToolbar() {
             if (!isInput) {
                 if (e.key === 'z') { e.preventDefault(); if (e.shiftKey) historyManager.redo(); else historyManager.undo(); }
                 if (e.key === 'y') { e.preventDefault(); historyManager.redo(); }
+                if (e.key === 'd' || e.key === 'D') { e.preventDefault(); duplicateSelection(); }
                 if (e.key === 'g' || e.key === 'G') {
                     e.preventDefault();
                     if (e.shiftKey) ungroupShapes();
@@ -1388,9 +1404,22 @@ function setupToolbar() {
 // vertices live here once, keyed by that id. They are embedded in the .holo file as `assets`.
 const importedMeshes = new Map(); // importId -> Float32Array of triangle-soup positions
 
-function serializeImportedMeshes() {
+// Only meshes some history state still refers to are written out, so a project does not
+// keep carrying an import the user deleted and undid past long ago.
+function collectImportIds(node, into = new Set()) {
+    if (Array.isArray(node)) node.forEach(n => collectImportIds(n, into));
+    else if (node && typeof node === 'object') {
+        if (node.importId) into.add(node.importId);
+        Object.values(node).forEach(v => { if (v && typeof v === 'object') collectImportIds(v, into); });
+    }
+    return into;
+}
+
+function serializeImportedMeshes(states) {
     const assets = {};
-    importedMeshes.forEach((positions, id) => { assets[id] = encodePositions(positions); });
+    collectImportIds(states).forEach(id => {
+        if (importedMeshes.has(id)) assets[id] = encodePositions(importedMeshes.get(id));
+    });
     return assets;
 }
 
@@ -1456,13 +1485,15 @@ async function importModelFile(file) {
     }
 }
 
-// `positions` arrive in scene units (cm). Unless recentre is off, the mesh is moved so its
-// bounding-box centre is the mesh origin — it then moves and scales about its middle like
-// any other shape — and stood on the grid.
-function addImportedMesh({ positions, format, recenter = true }, name) {
+// `positions` arrive in scene units (cm). By default the mesh is moved so its bounding-box
+// centre is the mesh origin — it then moves and scales about its middle like any other
+// shape — and stood on the grid. With `keepPlace` the geometry is centred the same way but
+// the mesh is put back where the positions were (for results built in world space, like a
+// mirror or an extrusion); with recenter false the file's coordinates are used verbatim.
+function addImportedMesh({ positions, format, recenter = true, keepPlace = false, color = 0x9aa7b8, focus = true }, name) {
     const geometry = buildImportedGeometry(positions);
     const center = new THREE.Vector3();
-    if (recenter) { geometry.boundingBox.getCenter(center); geometry.translate(-center.x, -center.y, -center.z); }
+    if (recenter || keepPlace) { geometry.boundingBox.getCenter(center); geometry.translate(-center.x, -center.y, -center.z); }
     const stored = Float32Array.from(geometry.attributes.position.array);
     geometry.computeBoundingBox();
     const size = new THREE.Vector3(); geometry.boundingBox.getSize(size);
@@ -1475,9 +1506,10 @@ function addImportedMesh({ positions, format, recenter = true }, name) {
     importedMeshes.set(importId, stored);
 
     const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
-        color: 0x9aa7b8, transparent: true, opacity: 0.85, roughness: 0.4, metalness: 0.1
+        color, transparent: true, opacity: 0.85, roughness: 0.4, metalness: 0.1
     }));
-    if (recenter) mesh.position.set(0, size.y / 2, 0);
+    if (keepPlace) mesh.position.copy(center);
+    else if (recenter) mesh.position.set(0, size.y / 2, 0);
     mesh.userData = {
         type: 'imported', importId, importFormat: format, originalGeometry: geometry,
         bindings: {}, isComposite: false, isHole: false, baseSize: measureBaseSize(geometry)
@@ -1489,9 +1521,242 @@ function addImportedMesh({ positions, format, recenter = true }, name) {
     shapes.push(mesh);
     selectShape(mesh);
     const tris = stored.length / 9;
-    updateStatus(`Imported ${mesh.name} (${format}, ${tris.toLocaleString()} triangles, ${(size.x * 10).toFixed(1)} × ${(size.y * 10).toFixed(1)} × ${(size.z * 10).toFixed(1)} mm)`);
+    updateStatus(`${format === 'STL' || format === 'OBJ' || format === 'SVG' ? 'Imported' : 'Created'} ${mesh.name} (${format}, ${tris.toLocaleString()} triangles, ${(size.x * 10).toFixed(1)} × ${(size.y * 10).toFixed(1)} × ${(size.z * 10).toFixed(1)} mm)`);
     historyManager.saveState();
-    centerSelection();
+    if (focus) centerSelection();
+    return mesh;
+}
+
+// A mesh's triangles in world space, outward-wound, as a flat non-indexed soup.
+function worldPositionsOf(mesh) {
+    mesh.updateMatrixWorld(true);
+    const g = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
+    g.applyMatrix4(mesh.matrixWorld);
+    const p = Float32Array.from(g.attributes.position.array);
+    g.dispose();
+    return mesh.matrixWorld.determinant() < 0 ? flipWinding(p) : p;
+}
+
+// === MODELLING TOOLS ===
+const cmPerSnap = () => (unitMode === 'inch' ? snapPrecision * 2.54 : snapPrecision / 10);
+
+function addClonedShape(clone) {
+    scene.add(clone);
+    shapes.push(clone);
+    addBomRowsForPaste(clone);
+}
+
+function selectAll(list) {
+    selectedShapes = []; selectedShape = null; transformControl.detach();
+    list.forEach(m => selectShape(m, { ctrlKey: true }));
+}
+
+function duplicateSelection() {
+    if (selectedShapes.length === 0) { updateStatus('Select something to duplicate.'); return; }
+    const offset = cmPerSnap() * 2;
+    const clones = selectedShapes.map(src => {
+        const c = cloneShape(src);
+        c.position.x += offset; c.position.z += offset;
+        addClonedShape(c);
+        return c;
+    });
+    renderBOM();
+    selectAll(clones);
+    historyManager.saveState();
+    updateStatus(`Duplicated ${clones.length} shape(s).`);
+}
+
+async function mirrorSelection() {
+    if (selectedShapes.length === 0) { updateStatus('Select something to mirror.'); return; }
+    const v = await showFormDialog({
+        title: 'Mirror', confirmLabel: 'Mirror',
+        message: 'Adds a mirrored copy, reflected across a plane through the world origin.',
+        fields: [{ id: 'axis', label: 'Mirror plane', type: 'select', value: 'x',
+            options: [['x', 'YZ plane (flip left/right)'], ['y', 'XZ plane (flip up/down)'], ['z', 'XY plane (flip front/back)']] }]
+    });
+    if (!v) return;
+    const created = [];
+    selectedShapes.slice().forEach(src => {
+        const mat = Array.isArray(src.material) ? src.material[0] : src.material;
+        created.push(addImportedMesh({
+            positions: mirrorPositions(worldPositionsOf(src), v.axis), format: 'Mirror', keepPlace: true,
+            color: mat.color.getHex(), focus: false
+        }, `${src.name} (mirror ${v.axis.toUpperCase()})`));
+    });
+    selectAll(created);
+    updateStatus(`Mirrored ${created.length} shape(s) across the ${v.axis.toUpperCase()} plane.`);
+}
+
+async function arraySelection() {
+    if (selectedShapes.length === 0) { updateStatus('Select something to array.'); return; }
+    const prefs = loadPrefs('array', { kind: 'linear', count: 3, dx: 20, dy: 0, dz: 0, axis: 'y', angle: 360 });
+    const linear = f => f.kind === 'linear';
+    const v = await showFormDialog({
+        title: 'Array', confirmLabel: 'Create array',
+        fields: [
+            { id: 'kind', label: 'Pattern', type: 'select', value: prefs.kind, options: [['linear', 'Linear'], ['polar', 'Polar (around an axis)']] },
+            { id: 'count', label: 'Total copies (including the original)', type: 'number', value: prefs.count, min: 2, max: 200, step: 1 },
+            { id: 'dx', label: 'Step X', unit: 'mm', type: 'number', value: prefs.dx, step: 1, showIf: linear },
+            { id: 'dy', label: 'Step Y', unit: 'mm', type: 'number', value: prefs.dy, step: 1, showIf: linear },
+            { id: 'dz', label: 'Step Z', unit: 'mm', type: 'number', value: prefs.dz, step: 1, showIf: linear },
+            { id: 'axis', label: 'Axis through the world origin', type: 'select', value: prefs.axis, showIf: f => !linear(f),
+              options: [['x', 'X'], ['y', 'Y (vertical)'], ['z', 'Z']] },
+            { id: 'angle', label: 'Sweep angle', unit: '°', type: 'number', value: prefs.angle, min: 1, max: 360, step: 5, showIf: f => !linear(f),
+              hint: '360 spreads the copies evenly round a full circle; less places the last copy at that angle.' }
+        ]
+    });
+    if (!v) return;
+    savePrefs('array', v);
+    const count = Math.round(v.count);
+    const sources = selectedShapes.slice();
+    const created = [];
+    const axisVec = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) }[v.axis];
+    const step = v.angle >= 360 ? v.angle / count : v.angle / (count - 1);
+    for (let i = 1; i < count; i++) {
+        sources.forEach(src => {
+            const c = cloneShape(src);
+            if (v.kind === 'linear') {
+                c.position.add(new THREE.Vector3(v.dx, v.dy, v.dz).multiplyScalar(i / 10));
+            } else {
+                const q = new THREE.Quaternion().setFromAxisAngle(axisVec, THREE.MathUtils.degToRad(step * i));
+                c.position.applyQuaternion(q);
+                c.quaternion.premultiply(q);
+            }
+            c.updateMatrix(); c.updateMatrixWorld(true);
+            addClonedShape(c);
+            created.push(c);
+        });
+    }
+    renderBOM();
+    selectAll(sources.concat(created));
+    historyManager.saveState();
+    updateStatus(`Array created: ${created.length} new shape(s).`);
+}
+
+// Fillet / chamfer for cubes. Stored as parameters on the shape (userData.edge), so the
+// rounded geometry is regenerated on undo and load and nothing has to be saved as vertices.
+function buildRoundedCubeGeometry(edge) {
+    const { positions, normals } = roundedBox(2, 2, 2, edge.radius, edge.style, edge.segments);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    if (normals) g.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    else g.computeVertexNormals();
+    g.computeBoundingBox();
+    return g;
+}
+
+async function roundEdges() {
+    const node = (currentPropertyNode && selectedShapes.length <= 1 ? currentPropertyNode : null)
+        || (selectedShapes.length === 1 ? selectedShapes[0] : null);
+    if (!node || node.userData.type !== 'cube' || node.userData.isComposite) {
+        updateStatus('Select a single cube (or pick one inside a group) to round its edges.');
+        return;
+    }
+    const meanScale = (node.scale.x + node.scale.y + node.scale.z) / 3;
+    const cur = node.userData.edge;
+    const v = await showFormDialog({
+        title: 'Round or chamfer edges', confirmLabel: 'Apply',
+        message: 'Sizes are approximate on a box that has been stretched unevenly.',
+        fields: [
+            { id: 'style', label: 'Edge style', type: 'select', value: cur ? cur.style : 'fillet',
+              options: [['fillet', 'Fillet (rounded)'], ['chamfer', 'Chamfer (bevelled)'], ['none', 'Sharp (remove)']] },
+            { id: 'radius', label: 'Size', unit: 'mm', type: 'number', min: 0.1, step: 0.5,
+              value: cur ? +(cur.radius * meanScale * 10).toFixed(2) : 2, showIf: f => f.style !== 'none' },
+            { id: 'segments', label: 'Smoothness', type: 'number', min: 2, max: 12, step: 1, value: cur ? cur.segments : 5, showIf: f => f.style === 'fillet' }
+        ]
+    });
+    if (!v) return;
+    node.userData.edge = v.style === 'none' ? null
+        : { style: v.style, radius: v.radius / 10 / meanScale, segments: Math.round(v.segments) || 5 };
+    const geometry = rebuildLeafGeometry(node.userData);
+    if (node.geometry) node.geometry.dispose();
+    node.geometry = geometry;
+    node.userData.originalGeometry = geometry;
+    node.userData.baseSize = measureBaseSize(geometry);
+    let parentGroup = node.parent;
+    while (parentGroup && parentGroup.type !== 'Scene') {
+        if (parentGroup.userData.isComposite) rebuildCSG(parentGroup);
+        parentGroup = parentGroup.parent;
+    }
+    selectPropertyNode(node);
+    updateDimensions();
+    historyManager.saveState();
+    updateStatus(v.style === 'none' ? 'Edges sharpened.' : `Applied ${v.style} of ${v.radius} mm.`);
+}
+
+// --- Sketch: draw a polygon on the ground, then extrude or revolve it ---
+function snapToGrid(pt) {
+    const g = cmPerSnap();
+    return new THREE.Vector3(Math.round(pt.x / g) * g, 0, Math.round(pt.z / g) * g);
+}
+
+function groundPoint(event) {
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, activeCamera);
+    const pt = new THREE.Vector3();
+    return raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), pt) ? snapToGrid(pt) : null;
+}
+
+function updateSketchLine(cursor = null) {
+    if (sketchLine) { scene.remove(sketchLine); sketchLine.geometry.dispose(); sketchLine = null; }
+    const pts = sketchPoints.map(p => p.clone().setY(0.02));
+    if (cursor) pts.push(cursor.clone().setY(0.02));
+    if (pts.length < 2) return;
+    sketchLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0x00ffcc }));
+    scene.add(sketchLine);
+}
+
+function toggleSketchMode() {
+    if (isSketchMode) { cancelSketch(); return; }
+    if (isWiringMode) cancelWire();
+    isSketchMode = true; sketchPoints = [];
+    document.getElementById('sketch-tool')?.classList.add('active');
+    updateStatus('Sketch: click to place corners on the ground (snapped). Click the first point or press Enter to finish, Esc to cancel.');
+}
+
+function cancelSketch(silent = false) {
+    isSketchMode = false; sketchPoints = [];
+    if (sketchLine) { scene.remove(sketchLine); sketchLine.geometry.dispose(); sketchLine = null; }
+    document.getElementById('sketch-tool')?.classList.remove('active');
+    if (!silent) updateStatus('Sketch cancelled.');
+}
+
+async function finishSketch() {
+    if (sketchPoints.length < 3) { updateStatus('A sketch needs at least three corners.'); return; }
+    const pts = sketchPoints.map(p => p.clone());
+    cancelSketch(true);
+    const prefs = loadPrefs('sketch', { op: 'extrude', depth: 10, segments: 48 });
+    const v = await showFormDialog({
+        title: 'Sketch to solid', confirmLabel: 'Create',
+        fields: [
+            { id: 'op', label: 'Operation', type: 'select', value: prefs.op,
+              options: [['extrude', 'Extrude upward'], ['revolve', 'Revolve around the Y axis']] },
+            { id: 'depth', label: 'Height', unit: 'mm', type: 'number', min: 0.1, step: 1, value: prefs.depth, showIf: f => f.op === 'extrude' },
+            { id: 'segments', label: 'Smoothness', type: 'number', min: 8, max: 128, step: 4, value: prefs.segments, showIf: f => f.op === 'revolve',
+              hint: 'Revolve uses distance from the Y axis as the radius and the drawing\'s top-view "up" as height. Keep every corner on one side of the axis.' }
+        ]
+    });
+    if (!v) { updateStatus('Sketch discarded.'); return; }
+    savePrefs('sketch', v);
+    try {
+        let positions;
+        if (v.op === 'extrude') {
+            // Shape space is XY extruded along +Z; rotating -90° about X makes Z the up axis,
+            // and negating y first makes the drawing read the same way from above.
+            const shape = new THREE.Shape(pts.map(p => new THREE.Vector2(p.x, -p.z)));
+            const g = new THREE.ExtrudeGeometry(shape, { depth: v.depth / 10, bevelEnabled: false });
+            g.rotateX(-Math.PI / 2);
+            positions = Float32Array.from((g.index ? g.toNonIndexed() : g).attributes.position.array);
+            g.dispose();
+            for (let i = 0; i < positions.length; i++) if (Math.abs(positions[i]) < 1e-6) positions[i] = 0; // rotation noise
+            if (signedVolume(positions) < 0) positions = flipWinding(positions);
+        } else {
+            positions = revolveProfile(pts.map(p => [p.x, -p.z]), Math.round(v.segments));
+        }
+        addImportedMesh({ positions, format: 'Sketch', keepPlace: true, focus: false }, v.op === 'extrude' ? 'Extrusion' : 'Revolve');
+    } catch (err) {
+        updateStatus(`Sketch failed: ${err.message}`);
+    }
 }
 
 function measureBaseSize(geometry) {
@@ -2186,6 +2451,16 @@ function onPointerDown(event) {
     mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(mouse, activeCamera);
 
+    if (isSketchMode) {
+        const pt = groundPoint(event);
+        if (!pt) return;
+        if (sketchPoints.length >= 3 && pt.distanceTo(sketchPoints[0]) < 1e-6) { finishSketch(); return; }
+        if (sketchPoints.length === 0 || pt.distanceTo(sketchPoints[sketchPoints.length - 1]) > 1e-6) sketchPoints.push(pt);
+        updateSketchLine();
+        updateStatus(`Sketch: ${sketchPoints.length} corner(s). Click the first point or press Enter to finish.`);
+        return;
+    }
+
     if (isWiringMode) {
         // intersect against shapes or a plane. Non-recursive: a group's hidden CSG source
         // meshes sit inside it with matching geometry, and intersectObjects defaults to
@@ -2224,6 +2499,10 @@ function onPointerDown(event) {
 }
 
 function onPointerMove(event) {
+    if (isSketchMode && sketchPoints.length > 0) {
+        const pt = groundPoint(event);
+        if (pt) updateSketchLine(pt);
+    }
     if (isWiringMode && wirePreviewSphere) {
         mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
         raycaster.setFromCamera(mouse, activeCamera);
@@ -2784,6 +3063,7 @@ function serializeShape(mesh) {
             type: mesh.userData.type,
             importId: mesh.userData.importId || null,
             importFormat: mesh.userData.importFormat || null,
+            edge: mesh.userData.edge ? { ...mesh.userData.edge } : null,
             bindings: mesh.userData.bindings ? { ...mesh.userData.bindings } : {},
             isComposite: !!mesh.userData.isComposite,
             isHole: !!mesh.userData.isHole,
@@ -2854,7 +3134,7 @@ function rebuildLeafGeometry(ud) {
         if (geometry) return geometry;
     }
     switch (ud.type) {
-        case 'cube': return new THREE.BoxGeometry(2, 2, 2);
+        case 'cube': return ud.edge ? buildRoundedCubeGeometry(ud.edge) : new THREE.BoxGeometry(2, 2, 2);
         case 'sphere': return new THREE.SphereGeometry(1.5, 32, 32);
         case 'cylinder': return new THREE.CylinderGeometry(1, 1, 2, 32);
         case 'cone': return new THREE.ConeGeometry(1.5, 2, 32);

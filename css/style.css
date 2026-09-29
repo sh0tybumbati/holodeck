@@ -164,6 +164,8 @@ input, textarea {
 #top-left-toolbar { top: 16px; left: 16px; }
 #top-toolbar { top: 16px; left: 50%; transform: translateX(-50%); }
 #left-sidebar { 
+    /* Stops above the variables panel and status bar, scrolling when the tools outgrow it. */
+    max-height: calc(100vh - 80px - 150px); overflow-y: auto;
     top: 80px; 
     left: 16px; 
     flex-direction: column; 
@@ -443,15 +445,24 @@ body.touch-mode .tool-select { min-height: 40px; }
    reserved bands rather than a flow: two rows across the top, the creation tools down the
    left under them, and a bottom strip for the status bar with the viewcube and variables
    sitting clear above it. Measured with test/measure-layout so nothing overlaps. */
+/* Mid-size screens: the file toolbar is wide enough to run into the centred tool row, so the
+   tool row drops beneath it, and the creation tools move down to match. */
+@media (max-width: 1500px) and (min-width: 769px) {
+    #top-toolbar { top: 80px; left: 16px; transform: none; }
+    #left-sidebar { top: 144px; max-height: calc(100vh - 144px - 150px); }
+}
+
 @media (max-width: 768px) {
     .tool-btn { padding: 6px 10px; font-size: 11px; }
     .icon-btn { width: 32px; height: 32px; padding: 6px; }
     .toolbar { gap: 6px; padding: 6px 8px; }
+    .toolbar-group { gap: 4px; }
+    #top-left-toolbar .separator { display: none; }
 
     /* Row 1: file/history on the left, theme and panel toggles on the right. */
     #top-left-toolbar { top: 8px; left: 8px; }
     #theme-toggles { top: 8px; right: 8px; gap: 4px; }
-    #color-theme-select { min-width: 0; width: 76px; font-size: 10px; padding: 4px 6px; }
+    #color-theme-select { min-width: 0; width: 60px; font-size: 10px; padding: 4px 6px; }
 
     /* Row 2: transform and boolean tools, free to wrap onto a second line. The row offsets
        leave space for the taller touch-mode buttons below. */
