@@ -50,7 +50,8 @@ const server = createServer(async (req, res) => {
         // scripts crossorigin so window.onerror reports real messages instead of the
         // opaque "Script error." — otherwise the harness cannot tell its own synthetic
         // pointer-event noise from a genuine app failure.
-        if (file.endsWith('index.html')) {
+        // ?noharness serves the plain app, for the tests that load a second copy in an iframe.
+        if (file.endsWith('index.html') && !req.url.includes('noharness')) {
             // Records the renderers the app creates so the harness can read
             // renderer.info.memory, which is how GPU resource leaks become measurable.
             // Test-only: the app itself keeps no global handle on its renderer.

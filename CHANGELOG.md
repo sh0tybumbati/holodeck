@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Keyboard shortcut sheet**: press `?` (or the keyboard button) for the full list. Also new: `Ctrl+A` selects everything.
+- **Autosave and recovery**: work is autosaved to the browser's IndexedDB two seconds after each change; if a session ends unsaved, the next launch offers to restore it (or discard it). Saving to a file clears the autosave.
+- **Unsaved-changes guard**: the tab title gets a `•` and the browser asks before you close or reload with unsaved work.
+- **Accessibility**: every icon button, toolbar and dynamically-built row control has an accessible name, decorative icons are hidden from screen readers, the status bar is a live region, dialogs are labelled modals with focus returned on close, and keyboard focus is visible.
+- **Tooling**: `package.json` with `npm test` (unit + browser suites), `npm run test:layout`, `npm start`; `test/run-unit.mjs`; and a GitHub Actions workflow running them.
 - **Mesh health checks**: Imports are analysed for open edges, non-manifold edges and inconsistent winding, and the status bar says when a mesh is not a clean closed solid (grouping and holes may then leave gaps). Two things that need no guessing are fixed automatically: zero-area triangles are removed and an inside-out closed solid is flipped. Grouping a not-clean import warns too.
 - **Background booleans**: Groups above 20,000 triangles are computed in a Web Worker (`js/csg-worker.js`) instead of freezing the page, and so are re-cuts after editing a part of such a group. Both paths run the same code (`js/csg-core.js`), and a test asserts the worker's result is identical to the inline one. Smaller groups are unchanged and stay instantaneous. Undo/redo and loading still recompute inline.
 - **Offline**: every library and font is vendored under `vendor/` (sources and licences in `vendor/README.md`); the app makes no network requests.

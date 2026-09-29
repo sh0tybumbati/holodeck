@@ -789,6 +789,94 @@ async function run() {
 
     check('no-uncaught-errors-after-robustness', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
+    // 18. Polish: shortcut sheet, unsaved-changes guard, autosave and restore, accessibility.
+    keys('?', { shiftKey: true });
+    check('question-mark-opens-the-shortcut-sheet', !!document.querySelector('[role="dialog"][aria-label="Keyboard shortcuts"] kbd'), 'dialog present');
+    keys('Escape');
+    check('escape-closes-the-shortcut-sheet', !document.querySelector('[role="dialog"]'), 'closed');
+    byId('btn-help').click();
+    check('help-button-opens-the-shortcut-sheet', !!document.querySelector('[role="dialog"]'), 'dialog present');
+    byId('dlg-ok').click();
+
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    document.querySelector('[data-shape="sphere"]').click();
+    keys('Escape');
+    keys('a', { ctrlKey: true });
+    check('ctrl-a-selects-everything', /2 shapes selected/.test(status()), status());
+
+    const leaving = () => { const ev = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(ev); return ev.defaultPrevented; };
+    check('unsaved-changes-ask-before-leaving', leaving() && document.title.startsWith('•'), `title="${document.title}"`);
+    byId('btn-save').click();
+    check('saving-clears-the-unsaved-guard', !leaving() && !document.title.startsWith('•'), `title="${document.title}"`);
+    document.querySelector('[data-shape="cone"]').click();
+    check('editing-after-a-save-is-unsaved-again', leaving(), 'guard on');
+
+    const idbGet = () => new Promise(resolve => {
+        const req = indexedDB.open('holodeck', 1);
+        req.onerror = () => resolve(undefined);
+        req.onsuccess = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains('kv')) { db.close(); resolve(undefined); return; }
+            const get = db.transaction('kv').objectStore('kv').get('autosave');
+            get.onsuccess = () => { db.close(); resolve(get.result); };
+            get.onerror = () => { db.close(); resolve(undefined); };
+        };
+    });
+    window.HOLODECK_AUTOSAVE_MS = 100;
+    clearScene();
+    await importViaInput('auto.stl', asciiStl(box(20, 10, 30)));
+    await new Promise(r => setTimeout(r, 600));
+    const record = await idbGet();
+    const recordState = record && JSON.parse(record.json);
+    const recordShapes = recordState && recordState.undoStack[recordState.undoStack.length - 1].shapes.length;
+    check('edits-are-autosaved-to-indexeddb', recordShapes === 1 && Object.keys(recordState.assets).length >= 1, `shapes=${recordShapes}`);
+
+    // A second copy of the app (no harness) must offer the session back.
+    async function loadFrame() {
+        const f = document.createElement('iframe');
+        f.style.cssText = 'position:fixed;left:-10000px;top:0;width:900px;height:700px;';
+        f.src = 'index.html?noharness=1';
+        document.body.appendChild(f);
+        await new Promise(r => f.addEventListener('load', r));
+        for (let i = 0; i < 80 && !f.contentDocument.getElementById('restore-banner')?.classList.contains('active'); i++) await new Promise(r => setTimeout(r, 100));
+        return f;
+    }
+    const frame = await loadFrame();
+    const fdoc = frame.contentDocument;
+    const banner = fdoc.getElementById('restore-banner');
+    check('a-second-session-offers-to-restore', banner.classList.contains('active') && /1 shape/.test(fdoc.getElementById('restore-text').textContent),
+        fdoc.getElementById('restore-text').textContent);
+    fdoc.getElementById('restore-yes').click();
+    await new Promise(r => setTimeout(r, 800));
+    const restoreStatus = fdoc.getElementById('status-bar').innerText.trim();
+    const fblobs = [];
+    frame.contentWindow.URL.createObjectURL = b => { fblobs.push(b); return 'blob:x'; };
+    frame.contentWindow.HTMLAnchorElement.prototype.click = () => {};
+    fdoc.getElementById('export-stl').click();
+    for (let i = 0; i < 40 && !fdoc.getElementById('dlg-ok'); i++) await new Promise(r => setTimeout(r, 50));
+    fdoc.getElementById('dlg-format').value = 'stl-ascii';
+    fdoc.getElementById('dlg-ok').click();
+    await new Promise(r => setTimeout(r, 300));
+    const restoredText = fblobs.length ? await fblobs[0].text() : '';
+    check('restore-brings-the-imported-shape-back', /Previous session restored/.test(restoreStatus) && (restoredText.match(/facet normal/g) || []).length === 12,
+        `status="${fdoc.getElementById('status-bar').innerText.trim()}" facets=${(restoredText.match(/facet normal/g) || []).length}`);
+    check('a-restored-session-counts-as-unsaved', (() => { const ev = new frame.contentWindow.Event('beforeunload', { cancelable: true }); frame.contentWindow.dispatchEvent(ev); return ev.defaultPrevented; })(), 'guard on');
+    frame.remove();
+
+    const frame2 = await loadFrame();
+    frame2.contentDocument.getElementById('restore-no').click();
+    await new Promise(r => setTimeout(r, 400));
+    check('discarding-removes-the-autosave', (await idbGet()) === undefined && !frame2.contentDocument.getElementById('restore-banner').classList.contains('active'), 'record gone');
+    frame2.remove();
+    window.HOLODECK_AUTOSAVE_MS = undefined;
+
+    const unnamed = [...document.querySelectorAll('button')].filter(b => !((b.getAttribute('aria-label') || b.textContent || '').trim()));
+    check('every-button-has-an-accessible-name', unnamed.length === 0, unnamed.map(b => b.outerHTML.slice(0, 120)).join(' | ') || 'all named');
+    check('status-bar-is-a-live-region', byId('status-bar').getAttribute('aria-live') === 'polite', 'aria-live=polite');
+
+    check('no-uncaught-errors-after-polish', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }
 

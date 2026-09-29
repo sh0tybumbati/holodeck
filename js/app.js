@@ -1,6 +1,7 @@
 import { CSG } from '../vendor/three-csg-ts/csg.js';
 import { importFile, importFormatOf, convertImported, UNIT_MM, ImportError, encodePositions, decodePositions } from './importers.js';
-import { showFormDialog, loadPrefs, savePrefs, describeTransform, describeMeasurement } from './ui.js';
+import { showFormDialog, showInfoDialog, loadPrefs, savePrefs, describeTransform, describeMeasurement } from './ui.js';
+import { kvGet, kvPut, kvDelete } from './storage.js';
 import { EXPORT_FORMATS, countTriangles } from './exporters.js';
 import { evaluateParts } from './csg-core.js';
 import { analyzeMesh, repairMesh, describeHealth } from './meshtools.js';
@@ -141,7 +142,8 @@ function renderBOM() {
         });
         
         const delBtn = document.createElement('button');
-        delBtn.innerHTML = '<i class="fas fa-trash"></i>';
+        delBtn.innerHTML = '<i class="fas fa-trash" aria-hidden="true"></i>';
+        delBtn.setAttribute('aria-label', `Remove ${item.name} from the bill of materials`);
         delBtn.style.background = 'none';
         delBtn.style.border = 'none';
         delBtn.style.cursor = 'pointer';
@@ -326,6 +328,11 @@ function init() {
     
     // Save initial state
     historyManager.saveState();
+    markClean();
+
+    labelIconButtons();
+    document.getElementById('btn-help')?.addEventListener('click', showShortcuts);
+    offerRestore();
 }
 
 // === VARIABLES LOGIC ===
@@ -395,6 +402,7 @@ function renderVariables() {
         const nameInp = document.createElement('input');
         nameInp.type = 'text';
         nameInp.value = key;
+        nameInp.setAttribute('aria-label', `Variable name ${key}`);
         nameInp.style.width = '70px';
         
         const eq = document.createElement('span');
@@ -405,7 +413,9 @@ function renderVariables() {
         valInp.value = val;
         
         const delBtn = document.createElement('button');
-        delBtn.innerHTML = '<i class="fas fa-trash"></i>';
+        delBtn.innerHTML = '<i class="fas fa-trash" aria-hidden="true"></i>';
+        delBtn.setAttribute('aria-label', `Delete variable ${key}`);
+        valInp.setAttribute('aria-label', `Value of ${key}`);
         
         nameInp.addEventListener('change', (e) => {
             const newName = e.target.value.trim();
@@ -1171,18 +1181,7 @@ function setupToolbar() {
     // History and Save/Load
     bindClick('btn-undo', () => historyManager.undo());
     bindClick('btn-redo', () => historyManager.redo());
-    bindClick('btn-save', () => {
-        const data = JSON.stringify({
-            version: "2.2",
-            thumbnail: captureThumbnail(),
-            assets: serializeImportedMeshes([historyManager.undoStack, historyManager.redoStack]),
-            undoStack: historyManager.undoStack,
-            redoStack: historyManager.redoStack
-        });
-        const blob = new Blob([data], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = 'project.holo'; a.click(); URL.revokeObjectURL(url);
-    });
+    bindClick('btn-save', saveProjectFile);
     const fileLoad = document.getElementById('file-load');
     if (fileLoad) {
         bindClick('btn-load', () => fileLoad.click());
@@ -1294,6 +1293,7 @@ function setupToolbar() {
             }
         }
         
+        if (!isInput && e.key === '?') { e.preventDefault(); showShortcuts(); return; }
         if (e.key === 'Enter' && isSketchMode) finishSketch();
         if (e.key === 'Enter' && isWiringMode) {
             if (wirePoints.length > 1) finalizeWire();
@@ -1306,6 +1306,7 @@ function setupToolbar() {
                 if (e.key === 'z') { e.preventDefault(); if (e.shiftKey) historyManager.redo(); else historyManager.undo(); }
                 if (e.key === 'y') { e.preventDefault(); historyManager.redo(); }
                 if (e.key === 'd' || e.key === 'D') { e.preventDefault(); duplicateSelection(); }
+                if (e.key === 'a' || e.key === 'A') { e.preventDefault(); if (shapes.length) selectAll(shapes.slice()); }
                 if (e.key === 'g' || e.key === 'G') {
                     e.preventDefault();
                     if (e.shiftKey) ungroupShapes();
@@ -1439,23 +1440,129 @@ function buildImportedGeometry(positions) {
     return geometry;
 }
 
+// --- Project files, dirty tracking and autosave ---
+const AUTOSAVE_KEY = 'autosave';
+let isDirty = false;
+let autosaveTimer = null;
+let autosavePaused = true; // until the previous session has been offered for restoring
+
+function buildProjectJson(withThumbnail = true) {
+    return JSON.stringify({
+        version: "2.2",
+        thumbnail: withThumbnail ? captureThumbnail() : '',
+        assets: serializeImportedMeshes([historyManager.undoStack, historyManager.redoStack]),
+        undoStack: historyManager.undoStack,
+        redoStack: historyManager.redoStack
+    });
+}
+
+function updateTitle() { document.title = (isDirty ? '• ' : '') + 'Holodeck - Web CAD'; }
+
+function markClean() { isDirty = false; clearTimeout(autosaveTimer); updateTitle(); }
+
+function markDirty() {
+    isDirty = true; updateTitle();
+    if (autosavePaused) return;
+    clearTimeout(autosaveTimer);
+    const delay = typeof window.HOLODECK_AUTOSAVE_MS === 'number' ? window.HOLODECK_AUTOSAVE_MS : 2000;
+    autosaveTimer = setTimeout(() => kvPut(AUTOSAVE_KEY, { savedAt: Date.now(), json: buildProjectJson(false) }), delay);
+}
+
+function saveProjectFile() {
+    const blob = new Blob([buildProjectJson()], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'project.holo'; a.click(); URL.revokeObjectURL(url);
+    markClean();
+    kvDelete(AUTOSAVE_KEY); // what was saved to disk no longer needs recovering
+    updateStatus('Project saved.');
+}
+
+// Anything unsaved is lost on close, so ask the browser to confirm.
+window.addEventListener('beforeunload', (e) => {
+    if (!isDirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+});
+
+function loadProjectData(data) {
+    if (!(data.version && data.undoStack)) throw new Error('not a Holodeck project');
+    Object.entries(data.assets || {}).forEach(([id, b64]) => importedMeshes.set(id, decodePositions(b64)));
+    historyManager.undoStack = data.undoStack;
+    historyManager.redoStack = data.redoStack || [];
+    if (historyManager.undoStack.length > 0) {
+        historyManager.restoreState(historyManager.undoStack[historyManager.undoStack.length - 1]);
+    }
+    updateToolbarButtons();
+}
+
 function openProjectFile(file) {
     const reader = new FileReader();
     reader.onload = (evt) => {
         try {
-            const data = JSON.parse(evt.target.result);
-            if (!(data.version && data.undoStack)) throw new Error('not a Holodeck project');
-            Object.entries(data.assets || {}).forEach(([id, b64]) => importedMeshes.set(id, decodePositions(b64)));
-            historyManager.undoStack = data.undoStack;
-            historyManager.redoStack = data.redoStack || [];
-            if (historyManager.undoStack.length > 0) {
-                historyManager.restoreState(historyManager.undoStack[historyManager.undoStack.length - 1]);
-            }
-            updateToolbarButtons();
+            loadProjectData(JSON.parse(evt.target.result));
+            markClean();
             updateStatus('Project loaded successfully.');
         } catch (err) { console.error(err); updateStatus('Failed to load project.'); }
     };
     reader.readAsText(file);
+}
+
+function timeAgo(ms) {
+    const m = Math.round((Date.now() - ms) / 60000);
+    if (m < 1) return 'moments ago';
+    if (m < 60) return `${m} minute${m === 1 ? '' : 's'} ago`;
+    const h = Math.round(m / 60);
+    return h < 48 ? `${h} hour${h === 1 ? '' : 's'} ago` : `${Math.round(h / 24)} days ago`;
+}
+
+// If the last session ended without a save, offer to bring it back. Autosave stays paused
+// until the person answers, so the offer is never overwritten by the empty new session.
+async function offerRestore() {
+    const banner = document.getElementById('restore-banner');
+    const resume = () => { autosavePaused = false; banner?.classList.remove('active'); };
+    const record = await kvGet(AUTOSAVE_KEY);
+    let data = null;
+    try { data = record && JSON.parse(record.json); } catch (e) { /* corrupt: treated as none */ }
+    const last = data && data.undoStack && data.undoStack[data.undoStack.length - 1];
+    if (!last || !banner || (!(last.shapes && last.shapes.length) && !Object.keys(last.variables || {}).length)) {
+        if (record) kvDelete(AUTOSAVE_KEY);
+        resume();
+        return;
+    }
+    const n = last.shapes.length;
+    document.getElementById('restore-text').textContent = `Restore your unsaved session from ${timeAgo(record.savedAt)}? (${n} shape${n === 1 ? '' : 's'})`;
+    banner.classList.add('active');
+    document.getElementById('restore-yes').onclick = () => {
+        try { loadProjectData(data); updateStatus('Previous session restored.'); } catch (e) { console.error(e); updateStatus('Could not restore the previous session.'); }
+        resume(); markDirty();
+    };
+    document.getElementById('restore-no').onclick = () => { kvDelete(AUTOSAVE_KEY); resume(); };
+}
+
+const SHORTCUTS = [
+    { heading: 'Project', rows: [['Ctrl+S', 'Save project (.holo)'], ['Ctrl+Z', 'Undo'], ['Ctrl+Shift+Z / Ctrl+Y', 'Redo'], ['?', 'Show this list']] },
+    { heading: 'Selection & editing', rows: [
+        ['Click', 'Select a shape'], ['Ctrl+Click', 'Add to / remove from the selection'], ['Shift+Drag', 'Box-select'],
+        ['Ctrl+A', 'Select everything'], ['Esc', 'Clear the selection, or leave the active tool'], ['Delete', 'Delete the selection'],
+        ['Ctrl+C / Ctrl+X / Ctrl+V', 'Copy, cut, paste'], ['Ctrl+D', 'Duplicate'], ['Ctrl+G', 'Group'], ['Ctrl+Shift+G', 'Ungroup'] ] },
+    { heading: 'Moving', rows: [
+        ['Arrows', 'Nudge along the screen axes by the snap size'], ['Shift+Arrows', 'Nudge 10× the snap size'],
+        ['Ctrl+Arrows', 'Nudge half the snap size'], ['Ctrl+Shift+Arrows', 'Nudge a tenth of the snap size'],
+        ['Alt (hold)', 'Bypass snapping while dragging'] ] },
+    { heading: 'Tools', rows: [
+        ['Sketch: Click, Enter', 'Add corners, then finish and extrude or revolve'], ['Wire: Click, Enter', 'Add route points, then finish'],
+        ['Measure: Click, Click', 'Distance between two points (snaps to corners)'], ['Drop a file', 'Import STL / OBJ / SVG, or open a .holo project'] ] }
+];
+function showShortcuts() { showInfoDialog({ title: 'Keyboard shortcuts', sections: SHORTCUTS }); }
+
+function labelIconButtons() {
+    document.querySelectorAll('button[title]:not([aria-label])').forEach(b => b.setAttribute('aria-label', b.getAttribute('title')));
+    document.querySelectorAll('.fas, .far, .fab').forEach(i => i.setAttribute('aria-hidden', 'true'));
+    const roles = { 'top-left-toolbar': 'File and history', 'top-toolbar': 'Transform and arrange', 'left-sidebar': 'Create and modify', 'theme-toggles': 'Appearance and panels' };
+    Object.entries(roles).forEach(([id, label]) => {
+        const el = document.getElementById(id);
+        if (el) { el.setAttribute('role', 'toolbar'); el.setAttribute('aria-label', label); }
+    });
 }
 
 async function importModelFile(file) {
@@ -3269,6 +3376,7 @@ class HistoryManager {
         if (this.undoStack.length > MAX_HISTORY_STATES) this.undoStack.shift();
         this.redoStack = [];
         updateToolbarButtons();
+        markDirty();
     }
 
     undo() {
@@ -3278,6 +3386,7 @@ class HistoryManager {
         const prevState = this.undoStack[this.undoStack.length - 1];
         this.restoreState(prevState);
         updateToolbarButtons();
+        markDirty();
     }
 
     redo() {
@@ -3286,6 +3395,7 @@ class HistoryManager {
         this.undoStack.push(nextState);
         this.restoreState(nextState);
         updateToolbarButtons();
+        markDirty();
     }
 
     restoreState(state) {

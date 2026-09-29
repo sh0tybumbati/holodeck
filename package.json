@@ -1,0 +1,15 @@
+{
+  "name": "holodeck",
+  "version": "0.3.0",
+  "description": "A web-based 3D CAD modelling tool built with Three.js",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "go run server.go",
+    "test": "npm run test:unit && npm run test:browser",
+    "test:unit": "node test/run-unit.mjs",
+    "test:browser": "node test/run-regression.mjs",
+    "test:layout": "node test/measure-layout.mjs 1440 900 && node test/measure-layout.mjs 500 800 && node test/measure-layout.mjs 500 800 touch"
+  },
+  "engines": { "node": ">=18" }
+}

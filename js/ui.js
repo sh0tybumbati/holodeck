@@ -101,6 +101,41 @@ export function showFormDialog({ title, message = '', fields = [], confirmLabel 
     return result;
 }
 
+// A read-only dialog: sections of [keys, description] rows. Closes on Escape, Enter or click.
+export function showInfoDialog({ title, sections }) {
+    const overlay = document.createElement('div');
+    overlay.className = 'dialog-overlay';
+    const box = document.createElement('div');
+    box.className = 'dialog glass-panel wide';
+    box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true'); box.setAttribute('aria-label', title);
+    const h = document.createElement('h3'); h.textContent = title; box.appendChild(h);
+    sections.forEach(({ heading, rows }) => {
+        const sh = document.createElement('h4'); sh.textContent = heading; box.appendChild(sh);
+        const dl = document.createElement('dl'); dl.className = 'shortcut-list';
+        rows.forEach(([keys, text]) => {
+            const dt = document.createElement('dt');
+            keys.split(' / ').forEach((combo, i) => {
+                if (i) dt.append(' / ');
+                combo.split('+').forEach((k, j) => { if (j) dt.append('+'); const kbd = document.createElement('kbd'); kbd.textContent = k; dt.appendChild(kbd); });
+            });
+            const dd = document.createElement('dd'); dd.textContent = text;
+            dl.append(dt, dd);
+        });
+        box.appendChild(dl);
+    });
+    const close = document.createElement('button');
+    close.type = 'button'; close.id = 'dlg-ok'; close.className = 'tool-btn primary'; close.textContent = 'Close';
+    const actions = document.createElement('div'); actions.className = 'dialog-actions'; actions.appendChild(close); box.appendChild(actions);
+    const previouslyFocused = document.activeElement;
+    const done = () => { overlay.remove(); window.removeEventListener('keydown', onKey, true); if (previouslyFocused && previouslyFocused.focus) previouslyFocused.focus(); };
+    const onKey = e => { if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); done(); } else if (e.key !== 'Tab') e.stopPropagation(); };
+    window.addEventListener('keydown', onKey, true);
+    close.addEventListener('click', done);
+    overlay.addEventListener('mousedown', e => { if (e.target === overlay) done(); });
+    overlay.appendChild(box); document.body.appendChild(overlay);
+    close.focus();
+}
+
 // Remembers a dialog's last answers between uses.
 export function loadPrefs(key, defaults) {
     try { return { ...defaults, ...JSON.parse(localStorage.getItem('holodeck.' + key) || '{}') }; } catch (e) { return { ...defaults }; }
