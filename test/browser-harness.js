@@ -447,13 +447,22 @@ async function run() {
     // 13. Importing. A model goes in through the real file input, so this covers the parser,
     //     the unit conversion, and the save/undo round trip of geometry that no primitive
     //     type can regenerate.
-    async function importViaInput(name, content) {
+    async function importViaInput(name, content, options = {}, { cancel = false } = {}) {
         const input = byId('file-import');
         const dt = new DataTransfer();
         dt.items.add(new File([content], name));
         input.files = dt.files;
         input.dispatchEvent(new Event('change', { bubbles: true }));
-        for (let i = 0; i < 40 && !/Imported|Import failed/.test(status()); i++) await new Promise(r => setTimeout(r, 50));
+        for (let i = 0; i < 40 && !byId('dlg-ok'); i++) await new Promise(r => setTimeout(r, 50));
+        if (!byId('dlg-ok')) return false;
+        for (const [id, value] of Object.entries(options)) {
+            const el = byId('dlg-' + id);
+            el.value = value;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        byId(cancel ? 'dlg-cancel' : 'dlg-ok').click();
+        for (let i = 0; i < 40 && !/Imported|Import failed|cancelled/.test(status()); i++) await new Promise(r => setTimeout(r, 50));
+        return true;
     }
     const box = (x, y, z) => [
         [0,0,0, x,0,0, x,y,0], [0,0,0, x,y,0, 0,y,0], [0,0,z, x,y,z, x,0,z], [0,0,z, 0,y,z, x,y,z],
@@ -509,6 +518,26 @@ async function run() {
     await importViaInput('bad.stl', 'this is not an stl');
     check('import-rejects-garbage-without-adding-a-shape', /Import failed/.test(status()) && (await exportSignature()) === null,
         `status="${status()}"`);
+
+    clearScene();
+    await importViaInput('zup.stl', asciiStl(box(20, 10, 30)), { up: 'z' });
+    const zUp = await exportSignature();
+    check('import-z-up-rotates-z-to-y', zUp && zUp.bounds === '[-10.000,0.000,-5.000]..[10.000,30.000,5.000]', fmt(zUp));
+
+    clearScene();
+    await importViaInput('inch.stl', asciiStl(box(1, 1, 1)), { units: 'in' });
+    const inch = await exportSignature();
+    check('import-units-inches', inch && inch.bounds === '[-12.700,0.000,-12.700]..[12.700,25.400,12.700]', fmt(inch));
+
+    clearScene();
+    await importViaInput('deep.svg', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="100" height="100"/></svg>', { depth: 10 });
+    const deep = await exportSignature();
+    check('import-svg-depth-is-adjustable', deep && deep.bounds === '[-13.229,0.000,-13.229]..[13.229,10.000,13.229]', fmt(deep));
+
+    clearScene();
+    await importViaInput('nope.stl', asciiStl(box(5, 5, 5)), {}, { cancel: true });
+    const cancelStatus = status();
+    check('import-dialog-cancel-adds-nothing', /cancelled/.test(cancelStatus) && (await exportSignature()) === null, `status="${cancelStatus}"`);
 
     check('no-uncaught-errors-after-import', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 

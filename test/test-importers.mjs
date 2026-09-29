@@ -2,7 +2,7 @@
 // Unit tests for the STL and OBJ parsers in js/importers.js. Pure node, no browser:
 //   node test/test-importers.mjs
 import assert from 'node:assert/strict';
-import { parseSTL, parseOBJ, encodePositions, decodePositions, ImportError } from '../js/importers.js';
+import { convertImported, parseSTL, parseOBJ, encodePositions, decodePositions, ImportError } from '../js/importers.js';
 
 const tri = [0, 0, 0, 1, 0, 0, 0, 1, 0];
 let failed = 0;
@@ -63,6 +63,12 @@ test('OBJ with a dangling face index or no faces is rejected', () => {
 test('positions survive the base64 round trip used by .holo files', () => {
     const p = Float32Array.from({ length: 300000 }, (_, i) => Math.fround(i * 0.37 - 5));
     assert.deepEqual(decodePositions(encodePositions(p)), p);
+});
+
+test('convertImported scales mm->cm and maps Z-up onto Y-up', () => {
+    const out = convertImported(Float32Array.from([10, 20, 30]), { unitsMm: 1, zUp: true });
+    assert.deepEqual(Array.from(out), [1, 3, -2]);
+    assert.deepEqual(Array.from(convertImported(Float32Array.from([1, 2, 3]), { unitsMm: 25.4 })).map(v => +v.toFixed(3)), [2.54, 5.08, 7.62]);
 });
 
 process.exit(failed ? 1 : 0);

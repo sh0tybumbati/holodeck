@@ -1,5 +1,6 @@
 import { CSG } from 'https://cdn.jsdelivr.net/npm/three-csg-ts@3.1.11/+esm';
-import { importFile, ImportError, encodePositions, decodePositions } from './importers.js';
+import { importFile, importFormatOf, convertImported, UNIT_MM, ImportError, encodePositions, decodePositions } from './importers.js';
+import { showFormDialog, loadPrefs, savePrefs } from './ui.js';
 
 // Basic Three.js setup
 let scene, camera, renderer, controls, transformControl, selectionBox;
@@ -1187,8 +1188,14 @@ function setupToolbar() {
     }
 
     // Drag and drop anywhere on the page: models are imported, projects are opened.
-    window.addEventListener('dragover', (e) => { if (e.dataTransfer?.types.includes('Files')) e.preventDefault(); });
+    const dropOverlay = document.getElementById('drop-overlay');
+    let dragDepth = 0;
+    const hasFiles = e => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+    window.addEventListener('dragenter', (e) => { if (hasFiles(e)) { dragDepth++; dropOverlay?.classList.add('active'); } });
+    window.addEventListener('dragleave', (e) => { if (hasFiles(e) && --dragDepth <= 0) { dragDepth = 0; dropOverlay?.classList.remove('active'); } });
+    window.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
     window.addEventListener('drop', (e) => {
+        dragDepth = 0; dropOverlay?.classList.remove('active');
         if (!e.dataTransfer?.files.length) return;
         e.preventDefault();
         Array.from(e.dataTransfer.files).forEach(file => {
@@ -1415,26 +1422,47 @@ function openProjectFile(file) {
 }
 
 async function importModelFile(file) {
+    const kind = importFormatOf(file.name);
+    if (!kind) { updateStatus(`Import failed: unsupported file type "${file.name}". Use STL, OBJ or SVG.`); return; }
+
+    const prefs = loadPrefs('import', { units: 'mm', up: 'y', depth: 5, recenter: true });
+    const isSvg = kind === 'svg';
+    const opts = await showFormDialog({
+        title: `Import ${file.name}`,
+        confirmLabel: 'Import',
+        fields: [
+            { id: 'units', label: 'File units', type: 'select', value: prefs.units, showIf: () => !isSvg,
+              options: [['mm', 'Millimetres'], ['cm', 'Centimetres'], ['in', 'Inches'], ['m', 'Metres']] },
+            { id: 'up', label: 'Up axis', type: 'select', value: prefs.up, showIf: () => !isSvg,
+              options: [['y', 'Y up (Holodeck, most game/OBJ tools)'], ['z', 'Z up (most CAD, slicers)']] },
+            { id: 'depth', label: 'Extrude depth', type: 'number', unit: 'mm', value: prefs.depth, min: 0.01, step: 0.5, showIf: () => isSvg,
+              hint: 'SVG shapes are extruded; 1 SVG unit = 1 CSS px (0.2646 mm).' },
+            { id: 'recenter', label: 'Centre on origin, resting on the grid', type: 'checkbox', value: prefs.recenter }
+        ]
+    });
+    if (!opts) { updateStatus('Import cancelled.'); return; }
+    savePrefs('import', { units: isSvg ? prefs.units : opts.units, up: isSvg ? prefs.up : opts.up, depth: isSvg ? opts.depth : prefs.depth, recenter: opts.recenter });
+
     updateStatus(`Importing ${file.name}...`);
     try {
-        const result = await importFile(file);
-        addImportedMesh(result, file.name.replace(/\.[^.]+$/, ''));
+        const result = await importFile(file, { svgDepthMm: opts.depth });
+        addImportedMesh({
+            positions: convertImported(result.positions, isSvg ? {} : { unitsMm: UNIT_MM[opts.units], zUp: opts.up === 'z' }),
+            format: result.format, recenter: opts.recenter
+        }, file.name.replace(/\.[^.]+$/, ''));
     } catch (err) {
         if (!(err instanceof ImportError)) console.error(err);
         updateStatus(`Import failed: ${err instanceof ImportError ? err.message : 'could not read ' + file.name}`);
     }
 }
 
-// Files are in millimetres (Holodeck's own STL export writes mm); the scene is in cm. The
-// mesh is re-centred on its bounding box so it lands at the origin and can be moved and
-// scaled about its middle like any other shape, then stood on the grid.
-function addImportedMesh({ positions, format, unitsMm }, name) {
-    const scaled = new Float32Array(positions.length);
-    const k = unitsMm / 10;
-    for (let i = 0; i < positions.length; i++) scaled[i] = positions[i] * k;
-    const geometry = buildImportedGeometry(scaled);
-    const center = new THREE.Vector3(); geometry.boundingBox.getCenter(center);
-    geometry.translate(-center.x, -center.y, -center.z);
+// `positions` arrive in scene units (cm). Unless recentre is off, the mesh is moved so its
+// bounding-box centre is the mesh origin — it then moves and scales about its middle like
+// any other shape — and stood on the grid.
+function addImportedMesh({ positions, format, recenter = true }, name) {
+    const geometry = buildImportedGeometry(positions);
+    const center = new THREE.Vector3();
+    if (recenter) { geometry.boundingBox.getCenter(center); geometry.translate(-center.x, -center.y, -center.z); }
     const stored = Float32Array.from(geometry.attributes.position.array);
     geometry.computeBoundingBox();
     const size = new THREE.Vector3(); geometry.boundingBox.getSize(size);
@@ -1449,7 +1477,7 @@ function addImportedMesh({ positions, format, unitsMm }, name) {
     const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
         color: 0x9aa7b8, transparent: true, opacity: 0.85, roughness: 0.4, metalness: 0.1
     }));
-    mesh.position.set(0, size.y / 2, 0);
+    if (recenter) mesh.position.set(0, size.y / 2, 0);
     mesh.userData = {
         type: 'imported', importId, importFormat: format, originalGeometry: geometry,
         bindings: {}, isComposite: false, isHole: false, baseSize: measureBaseSize(geometry)

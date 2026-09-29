@@ -126,17 +126,35 @@ export function parseSVG(text, depthMm = SVG_DEFAULT_DEPTH_MM) {
     return { positions };
 }
 
-// Dispatches on file extension. Resolves to { positions, format, unitsMm } where unitsMm is
-// how many millimetres one unit of `positions` is — STL and OBJ are assumed to be in mm, the
-// convention Holodeck's own STL export uses, so a file round-trips at its original size.
+// Dispatches on file extension. Resolves to { positions, format } with positions in the
+// file's own units and axes; convertImported() puts them into scene space.
 export async function importFile(file, { svgDepthMm } = {}) {
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     switch (ext) {
-        case 'stl': return { ...parseSTL(await file.arrayBuffer()), format: 'STL', unitsMm: 1 };
-        case 'obj': return { ...parseOBJ(await file.text()), format: 'OBJ', unitsMm: 1 };
-        case 'svg': return { ...parseSVG(await file.text(), svgDepthMm), format: 'SVG', unitsMm: 1 };
+        case 'stl': return { ...parseSTL(await file.arrayBuffer()), format: 'STL' };
+        case 'obj': return { ...parseOBJ(await file.text()), format: 'OBJ' };
+        case 'svg': return { ...parseSVG(await file.text(), svgDepthMm), format: 'SVG' };
         default: throw new ImportError(`Unsupported file type ".${ext}". Use STL, OBJ or SVG.`);
     }
+}
+
+export const UNIT_MM = { mm: 1, cm: 10, m: 1000, in: 25.4 };
+export function importFormatOf(name) {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    return ['stl', 'obj', 'svg'].includes(ext) ? ext : null;
+}
+
+// File space -> scene space (centimetres, Y up). zUp maps the CAD convention (Z up) onto
+// Three's: (x, y, z) -> (x, z, -y), a pure rotation, so winding is preserved.
+export function convertImported(positions, { unitsMm = 1, zUp = false } = {}) {
+    const out = new Float32Array(positions.length);
+    const k = unitsMm / 10;
+    for (let i = 0; i < positions.length; i += 3) {
+        const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+        if (zUp) { out[i] = x * k; out[i + 1] = z * k; out[i + 2] = -y * k; }
+        else { out[i] = x * k; out[i + 1] = y * k; out[i + 2] = z * k; }
+    }
+    return out;
 }
 
 // Float32Array <-> base64, for embedding imported meshes in a project file.
