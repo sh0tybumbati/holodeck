@@ -48,10 +48,27 @@ async function lastBlobText() {
     return await blobs[blobs.length - 1].text();
 }
 
+// Waits for a form dialog, sets fields by id, then confirms (or cancels) it.
+async function driveDialog(options = {}, { cancel = false } = {}) {
+    for (let i = 0; i < 40 && !byId('dlg-ok'); i++) await new Promise(r => setTimeout(r, 50));
+    if (!byId('dlg-ok')) return false;
+    for (const [id, value] of Object.entries(options)) {
+        const el = byId('dlg-' + id);
+        if (!el) continue; // e.g. the selection-only box only exists when something is selected
+        if (el.type === 'checkbox') el.checked = value; else el.value = value;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    byId(cancel ? 'dlg-cancel' : 'dlg-ok').click();
+    await new Promise(r => setTimeout(r, 60));
+    return true;
+}
+
 // Exports the scene and summarises the STL. Returns null when the export was refused.
 async function exportSignature() {
     const before = blobs.length;
     byId('export-stl').click();
+    // Empty scenes are refused before any dialog opens.
+    if (!(await driveDialog({ format: 'stl-ascii', selectionOnly: false })) && blobs.length === before) return null;
     if (blobs.length === before) return null;
 
     const text = await lastBlobText();
@@ -443,6 +460,422 @@ async function run() {
     check('marking-a-part-as-hole-recuts-the-group',
         solidAssembly && cutAssembly && solidAssembly.bounds !== cutAssembly.bounds,
         `solid "${fmt(solidAssembly)}" -> hole "${fmt(cutAssembly)}"`);
+
+    // 13. Importing. A model goes in through the real file input, so this covers the parser,
+    //     the unit conversion, and the save/undo round trip of geometry that no primitive
+    //     type can regenerate.
+    async function importViaInput(name, content, options = {}, { cancel = false } = {}) {
+        options = { units: 'mm', up: 'y', recenter: true, ...options }; // the dialog remembers its last answers
+        const input = byId('file-import');
+        const dt = new DataTransfer();
+        dt.items.add(new File([content], name));
+        input.files = dt.files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        if (!await driveDialog(options, { cancel })) return false;
+        for (let i = 0; i < 40 && !/Imported|Import failed|cancelled/.test(status()); i++) await new Promise(r => setTimeout(r, 50));
+        return true;
+    }
+    // Outward-wound box triangles (a mesh that winds inward is "inside-out" to the importer).
+    const box = (x, y, z) => [
+        [0,0,0, x,0,0, x,y,0], [0,0,0, x,y,0, 0,y,0], [0,0,z, x,y,z, x,0,z], [0,0,z, 0,y,z, x,y,z],
+        [0,0,0, 0,y,z, 0,0,z], [0,0,0, 0,y,0, 0,y,z], [x,0,0, x,0,z, x,y,z], [x,0,0, x,y,z, x,y,0],
+        [0,0,0, x,0,z, x,0,0], [0,0,0, 0,0,z, x,0,z], [0,y,0, x,y,0, x,y,z], [0,y,0, x,y,z, 0,y,z]]
+        .map(t => [...t.slice(0, 3), ...t.slice(6, 9), ...t.slice(3, 6)]);
+    const asciiStl = tris => 'solid t\n' + tris.map(t => 'facet normal 0 0 0\nouter loop\n'
+        + [0, 3, 6].map(i => `vertex ${t[i] + 100} ${t[i + 1] + 100} ${t[i + 2] + 100}\n`).join('')
+        + 'endloop\nendfacet\n').join('') + 'endsolid t\n';
+
+    clearScene();
+    await importViaInput('block.stl', asciiStl(box(20, 10, 30))); // mm, far from the origin
+    const importedStl = await exportSignature();
+    check('import-stl-lands-at-size-in-mm-on-the-grid',
+        importedStl && importedStl.facets === 12 && importedStl.bounds === '[-10.000,0.000,-15.000]..[10.000,10.000,15.000]',
+        `${fmt(importedStl)} status="${status()}"`);
+
+    const savedImport = await saveAndParse();
+    check('import-is-embedded-once-in-the-save-file',
+        Object.keys(savedImport.assets || {}).length === 1
+            && !JSON.stringify(savedImport.undoStack).includes('positions'),
+        `assets=${Object.keys(savedImport.assets || {}).length}`);
+
+    document.querySelector('[data-shape="cube"]').click();
+    byId('btn-undo').click();
+    const afterImportUndo = await exportSignature();
+    check('import-survives-undo', sameMesh(afterImportUndo, importedStl), `${fmt(importedStl)} -> ${fmt(afterImportUndo)}`);
+
+    clearScene();
+    const loadInput = byId('file-load');
+    const dt = new DataTransfer();
+    dt.items.add(new File([JSON.stringify(savedImport)], 'project.holo'));
+    loadInput.files = dt.files;
+    loadInput.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 500));
+    check('import-survives-save-and-load', sameMesh(await exportSignature(), importedStl), `status="${status()}"`);
+
+    clearScene();
+    await importViaInput('quad.obj', 'v 0 0 0\nv 40 0 0\nv 40 0 40\nv 0 0 40\nv 20 30 20\nf 1 2 3 4\nf 1 2 5\nf 2 3 5\nf 3 4 5\nf 4 1 5\n');
+    const importedObj = await exportSignature();
+    check('import-obj-pyramid', importedObj && importedObj.facets === 6 && importedObj.bounds === '[-20.000,0.000,-20.000]..[20.000,30.000,20.000]',
+        fmt(importedObj));
+
+    clearScene();
+    await importViaInput('frame.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">'
+        + '<path fill-rule="evenodd" d="M0 0H100V100H0Z M25 25V75H75V25Z"/></svg>');
+    const importedSvg = await exportSignature();
+    // 100px = 26.458mm, extruded 5mm. A square with a square hole is 8 wall quads + top + bottom rings.
+    check('import-svg-extrudes-a-frame-with-its-hole',
+        importedSvg && importedSvg.bounds === '[-13.229,0.000,-13.229]..[13.229,5.000,13.229]' && importedSvg.facets > 12,
+        fmt(importedSvg));
+
+    clearScene();
+    await importViaInput('bad.stl', 'this is not an stl');
+    check('import-rejects-garbage-without-adding-a-shape', /Import failed/.test(status()) && (await exportSignature()) === null,
+        `status="${status()}"`);
+
+    clearScene();
+    await importViaInput('zup.stl', asciiStl(box(20, 10, 30)), { up: 'z' });
+    const zUp = await exportSignature();
+    check('import-z-up-rotates-z-to-y', zUp && zUp.bounds === '[-10.000,0.000,-5.000]..[10.000,30.000,5.000]', fmt(zUp));
+
+    clearScene();
+    await importViaInput('inch.stl', asciiStl(box(1, 1, 1)), { units: 'in' });
+    const inch = await exportSignature();
+    check('import-units-inches', inch && inch.bounds === '[-12.700,0.000,-12.700]..[12.700,25.400,12.700]', fmt(inch));
+
+    clearScene();
+    await importViaInput('deep.svg', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="100" height="100"/></svg>', { depth: 10 });
+    const deep = await exportSignature();
+    check('import-svg-depth-is-adjustable', deep && deep.bounds === '[-13.229,0.000,-13.229]..[13.229,10.000,13.229]', fmt(deep));
+
+    clearScene();
+    await importViaInput('nope.stl', asciiStl(box(5, 5, 5)), {}, { cancel: true });
+    const cancelStatus = status();
+    check('import-dialog-cancel-adds-nothing', /cancelled/.test(cancelStatus) && (await exportSignature()) === null, `status="${cancelStatus}"`);
+
+    check('no-uncaught-errors-after-import', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 14. Modelling tools.
+    const sigOf = async () => exportSignature();
+    clearScene();
+    await importViaInput('far.stl', asciiStl(box(20, 10, 30)), { recenter: false }); // x 100..120mm, z 100..130mm
+    const farOne = await sigOf();
+    check('import-without-recentring-keeps-file-coordinates',
+        farOne && farOne.bounds === '[100.000,100.000,100.000]..[120.000,110.000,130.000]', fmt(farOne));
+
+    const keys = (key, extra = {}) => window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, ...extra }));
+    keys('d', { ctrlKey: true });
+    const dup = await sigOf();
+    check('duplicate-adds-an-offset-copy', dup && dup.facets === 24 && dup.bounds !== farOne.bounds, fmt(dup));
+
+    clearScene();
+    await importViaInput('far.stl', asciiStl(box(20, 10, 30)), { recenter: false });
+    byId('mirror-selected').click();
+    await driveDialog({ axis: 'x' });
+    const mirrored = await sigOf();
+    check('mirror-adds-a-reflected-copy', mirrored && mirrored.facets === 24
+        && mirrored.bounds === '[-120.000,100.000,100.000]..[120.000,110.000,130.000]', fmt(mirrored));
+
+    clearScene();
+    await importViaInput('far.stl', asciiStl(box(20, 10, 30)), { recenter: false });
+    byId('array-selected').click();
+    await driveDialog({ kind: 'polar', count: 4, axis: 'y', angle: 360 });
+    const polar = await sigOf();
+    check('polar-array-spreads-copies-round-the-axis', polar && polar.facets === 48
+        && polar.bounds === '[-130.000,100.000,-130.000]..[130.000,110.000,130.000]', fmt(polar));
+
+    clearScene();
+    await importViaInput('block.stl', asciiStl(box(20, 10, 30)));
+    byId('array-selected').click();
+    await driveDialog({ kind: 'linear', count: 3, dx: 30, dy: 0, dz: 0 });
+    const linear = await sigOf();
+    check('linear-array', linear && linear.facets === 36 && linear.bounds === '[-10.000,0.000,-15.000]..[70.000,10.000,15.000]', fmt(linear));
+
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    byId('round-edges').click();
+    await driveDialog({ style: 'chamfer', radius: 2 });
+    const chamfered = await sigOf();
+    check('chamfer-edges-of-a-cube', chamfered && chamfered.facets === 108, fmt(chamfered));
+    const chamferSize = chamfered.bounds.match(/\[(.*?)\]\.\.\[(.*?)\]/).slice(1).map(x => x.split(',').map(Number));
+    check('chamfer-keeps-the-cube-size', chamferSize[1].every((v, i) => Math.abs(v - chamferSize[0][i] - 20) < 0.01), chamfered.bounds);
+    document.querySelector('[data-shape="sphere"]').click();
+    byId('btn-undo').click();
+    check('rounded-edges-survive-undo', sameMesh(await sigOf(), chamfered), 'after undo');
+    const savedEdge = await saveAndParse();
+    const lastState = JSON.stringify(savedEdge.undoStack[savedEdge.undoStack.length - 1]);
+    check('edge-parameters-are-saved-not-vertices', lastState.includes('"chamfer"') && !lastState.includes('"importId":"'),
+        `state has chamfer=${lastState.includes('"chamfer"')}`);
+    check('save-only-embeds-meshes-history-still-uses',
+        Object.keys(savedEdge.assets || {}).length > 0 && Object.keys(savedEdge.assets || {}).every(id => JSON.stringify(savedEdge.undoStack).includes(id)),
+        `assets=${Object.keys(savedEdge.assets || {}).length}`);
+    boxSelectAll();
+    byId('round-edges').click();
+    await driveDialog({ style: 'none' });
+    const sharp = await sigOf();
+    check('sharp-removes-the-rounding', sharp && sharp.facets === 12, fmt(sharp));
+
+    // Sketch: click ground points chosen through a replica of the app camera.
+    const clickGround = (x, z) => {
+        const cam = window.__camera; // the camera the app last rendered with (see run-regression.mjs)
+        cam.updateMatrixWorld(true);
+        cam.matrixWorldInverse.copy(cam.matrixWorld).invert(); // the renderer only refreshes this at draw time
+        const v = new THREE.Vector3(x, 0, z).project(cam);
+        const canvas = document.querySelector('#canvas-container canvas');
+        const at = { clientX: (v.x + 1) / 2 * window.innerWidth, clientY: (1 - v.y) / 2 * window.innerHeight, bubbles: true };
+        canvas.dispatchEvent(new PointerEvent('pointerdown', at));
+        window.dispatchEvent(new PointerEvent('pointerup', at));
+    };
+    clearScene();
+    await new Promise(r => setTimeout(r, 900)); // let any camera centring animation finish
+    byId('sketch-tool').click();
+    [[3, 2], [6, 2], [6, 5], [3, 5]].forEach(([x, z]) => clickGround(x, z));
+    keys('Enter');
+    await driveDialog({ op: 'extrude', depth: 10 });
+    const extruded = await sigOf();
+    check('sketch-extrude', extruded && extruded.facets === 12 && extruded.bounds === '[30.000,0.000,20.000]..[60.000,10.000,50.000]', fmt(extruded));
+
+    clearScene();
+    byId('sketch-tool').click();
+    [[2, 0], [4, 0], [4, -6], [2, -6]].forEach(([x, z]) => clickGround(x, z));
+    keys('Enter');
+    await driveDialog({ op: 'revolve', segments: 32 });
+    const revolved = await sigOf();
+    check('sketch-revolve-makes-a-ring', revolved && revolved.bounds === '[-40.000,0.000,-40.000]..[40.000,60.000,40.000]' && revolved.facets === 4 * 32 * 2, fmt(revolved));
+
+    clearScene();
+    byId('sketch-tool').click();
+    clickGround(1, 1); clickGround(4, 1);
+    keys('Escape');
+    check('sketch-escape-cancels', /Sketch cancelled/.test(status()) && !byId('sketch-tool').classList.contains('active'), status());
+
+    check('no-uncaught-errors-after-modelling', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 15. Export formats (each goes through the real dialog).
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    document.querySelector('[data-shape="sphere"]').click();
+    async function exportAs(format, opts = {}) {
+        const before = blobs.length;
+        byId('export-stl').click();
+        await driveDialog({ format, ...opts });
+        return blobs.length > before ? blobs[blobs.length - 1] : null;
+    }
+    const binBlob = await exportAs('stl-binary');
+    const binBuf = binBlob && await binBlob.arrayBuffer();
+    const binCount = binBuf && new DataView(binBuf).getUint32(80, true);
+    check('export-binary-stl-is-well-formed', binBuf && binBuf.byteLength === 84 + 50 * binCount && binCount > 12,
+        `bytes=${binBuf && binBuf.byteLength} triangles=${binCount}`);
+
+    const objBlob = await exportAs('obj');
+    const objText = objBlob && await objBlob.text();
+    check('export-obj-has-both-objects', objText && (objText.match(/^o /gm) || []).length === 2 && /^f \d+ \d+ \d+$/m.test(objText),
+        objText && objText.slice(0, 60));
+
+    const mfBlob = await exportAs('3mf');
+    const mfBytes = mfBlob && new Uint8Array(await mfBlob.arrayBuffer());
+    check('export-3mf-is-a-zip-with-a-model', mfBytes && mfBytes[0] === 0x50 && mfBytes[1] === 0x4b
+        && new TextDecoder().decode(mfBytes).includes('3D/3dmodel.model') && new TextDecoder().decode(mfBytes).includes('unit="millimeter"'),
+        `bytes=${mfBytes && mfBytes.length}`);
+
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    document.querySelector('[data-shape="sphere"]').click(); // sphere is selected
+    const onlySelected = await exportAs('stl-ascii', { selectionOnly: true });
+    const onlyText = onlySelected && await onlySelected.text();
+    const onlyFacets = onlyText && (onlyText.match(/facet normal/g) || []).length;
+    check('export-selection-only', onlyFacets > 12 && (onlyText.match(/^solid /gm) || []).length === 1, `facets=${onlyFacets}`);
+
+    byId('export-stl').click();
+    await driveDialog({}, { cancel: true });
+    check('export-cancel-writes-nothing', /cancelled/.test(status()), status());
+
+    check('no-uncaught-errors-after-export', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 16. Precision: numeric transforms, snap toggle, measuring.
+    clearScene();
+    await importViaInput('block.stl', asciiStl(box(20, 10, 30)));
+    const setField = (id, value) => { const el = byId(id); el.value = value; el.dispatchEvent(new Event('change', { bubbles: true })); };
+    check('position-fields-show-the-selection', byId('obj-py').value === '0.5', `py="${byId('obj-py').value}"`);
+    setField('obj-px', '5'); setField('obj-pz', '2*3');
+    const moved = await sigOf();
+    check('typing-a-position-moves-the-shape-and-accepts-expressions',
+        moved && moved.bounds === '[40.000,0.000,45.000]..[60.000,10.000,75.000]', fmt(moved));
+    setField('obj-px', '0'); setField('obj-pz', '0'); setField('obj-ry', '90');
+    const turned = await sigOf();
+    check('typing-a-rotation-turns-the-shape', turned && turned.bounds === '[-15.000,0.000,-10.000]..[15.000,10.000,10.000]', fmt(turned));
+    setField('obj-px', 'nonsense');
+    check('a-bad-position-is-refused-not-applied', /not a number/.test(status()) && (await sigOf()).bounds === turned.bounds, status());
+    byId('btn-undo').click();
+    check('numeric-edits-are-undoable', (await sigOf()).bounds !== turned.bounds, 'after undo');
+
+    byId('snap-toggle').click();
+    check('snap-toggle-turns-snapping-off', /Snapping off/.test(status()) && !byId('snap-toggle').classList.contains('active'), status());
+    byId('snap-toggle').click();
+    check('snap-toggle-turns-snapping-back-on', /Snapping on/.test(status()) && byId('snap-toggle').classList.contains('active'), status());
+
+    clearScene();
+    await new Promise(r => setTimeout(r, 900));
+    byId('measure-tool').click();
+    clickGround(0, 0); clickGround(3, 4);
+    await new Promise(r => setTimeout(r, 200)); // the label is attached to the DOM at the next draw
+    const label = document.querySelector('.measure-label');
+    check('measure-two-ground-points-is-50mm', label && /^50\.00 mm/.test(label.textContent) && /Δx 30\.00\s+Δy 0\.00\s+Δz 40\.00/.test(label.textContent),
+        label ? label.textContent : `no label; status="${status()}"`);
+    keys('Escape');
+    check('escape-finishes-measuring-and-clears-it', !document.querySelector('.measure-label') && !byId('measure-tool').classList.contains('active'), status());
+
+    document.querySelector('[data-shape="cube"]').click();
+    await new Promise(r => setTimeout(r, 900));
+    byId('measure-tool').click();
+    check('measure-mode-does-not-select-or-add-shapes', /Measure:/.test(status()), status());
+    keys('Escape');
+
+    check('no-uncaught-errors-after-precision', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 17. Robustness: mesh health, boolean failures, and the CSG worker.
+    const openTri = 'solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 10 0\nendloop\nendfacet\nendsolid t\n';
+    clearScene();
+    await importViaInput('open.stl', openTri);
+    check('import-warns-about-an-open-mesh', /not watertight \(3 open edge/.test(status()), status());
+
+    clearScene();
+    await importViaInput('closed.stl', asciiStl(box(10, 10, 10)));
+    check('import-of-a-clean-mesh-has-no-warning', !/⚠|Note:/.test(status()), status());
+
+    const insideOut = asciiStl(box(10, 10, 10).map(t => [...t.slice(0, 3), ...t.slice(6, 9), ...t.slice(3, 6)])); // reversed again = inward
+    clearScene();
+    await importViaInput('inside-out.stl', insideOut);
+    check('import-flips-an-inside-out-solid', /flipped/.test(status()) && !/⚠/.test(status()), status());
+
+    // A hole larger than the solid removes everything: that must fail cleanly, not corrupt the scene.
+    clearScene();
+    await importViaInput('small.stl', asciiStl(box(10, 10, 10)));
+    await importViaInput('big.stl', asciiStl(box(30, 30, 30)));
+    byId('type-hole').checked = true;
+    byId('type-hole').dispatchEvent(new Event('change', { bubbles: true }));
+    boxSelectAll();
+    byId('group-shapes').click();
+    check('a-group-that-cuts-away-everything-fails-cleanly', /Grouping failed/.test(status()) && /left nothing/.test(status()), status());
+    const afterFailure = await exportSignature();
+    check('failed-grouping-leaves-the-solid-in-place', afterFailure && afterFailure.facets === 12, fmt(afterFailure));
+
+    // The worker must produce the same solid as the inline path.
+    async function crossGroup(threshold) {
+        window.HOLODECK_CSG_WORKER_THRESHOLD = threshold;
+        clearScene();
+        await importViaInput('a.stl', asciiStl(box(20, 10, 30)));
+        await importViaInput('b.stl', asciiStl(box(10, 20, 10)));
+        boxSelectAll();
+        byId('group-shapes').click();
+        for (let i = 0; i < 100 && !/Grouped|failed/.test(status()); i++) await new Promise(r => setTimeout(r, 50));
+        return { status: status(), sig: await exportSignature() };
+    }
+    const inline = await crossGroup(1e9);
+    const viaWorker = await crossGroup(0);
+    check('inline-group-union-is-a-cross', inline.sig && inline.sig.bounds === '[-10.000,0.000,-15.000]..[10.000,20.000,15.000]', `${inline.status} ${fmt(inline.sig)}`);
+    check('worker-group-matches-inline-exactly', viaWorker.sig && sameMesh(viaWorker.sig, inline.sig), `${fmt(viaWorker.sig)} vs ${fmt(inline.sig)}`);
+
+    // Editing a member of a worker-computed group re-cuts it in the background.
+    window.HOLODECK_CSG_WORKER_THRESHOLD = 0;
+    const workerPartPicker = byId('obj-part');
+    workerPartPicker.value = workerPartPicker.options[1].value;
+    workerPartPicker.dispatchEvent(new Event('change', { bubbles: true }));
+    const workerW = byId('obj-w'); workerW.value = '4'; workerW.dispatchEvent(new Event('change', { bubbles: true }));
+    for (let i = 0; i < 100 && !/recomputed/.test(status()); i++) await new Promise(r => setTimeout(r, 50));
+    const edited = await exportSignature();
+    check('editing-a-worker-group-part-recomputes-it', /recomputed/.test(status()) || edited, `status="${status()}" ${fmt(edited)}`);
+    check('worker-edit-changed-the-solid', edited && edited.bounds !== viaWorker.sig.bounds, `${fmt(edited)} vs ${fmt(viaWorker.sig)}`);
+    window.HOLODECK_CSG_WORKER_THRESHOLD = undefined;
+
+    check('no-uncaught-errors-after-robustness', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 18. Polish: shortcut sheet, unsaved-changes guard, autosave and restore, accessibility.
+    keys('?', { shiftKey: true });
+    check('question-mark-opens-the-shortcut-sheet', !!document.querySelector('[role="dialog"][aria-label="Keyboard shortcuts"] kbd'), 'dialog present');
+    keys('Escape');
+    check('escape-closes-the-shortcut-sheet', !document.querySelector('[role="dialog"]'), 'closed');
+    byId('btn-help').click();
+    check('help-button-opens-the-shortcut-sheet', !!document.querySelector('[role="dialog"]'), 'dialog present');
+    byId('dlg-ok').click();
+
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    document.querySelector('[data-shape="sphere"]').click();
+    keys('Escape');
+    keys('a', { ctrlKey: true });
+    check('ctrl-a-selects-everything', /2 shapes selected/.test(status()), status());
+
+    const leaving = () => { const ev = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(ev); return ev.defaultPrevented; };
+    check('unsaved-changes-ask-before-leaving', leaving() && document.title.startsWith('•'), `title="${document.title}"`);
+    byId('btn-save').click();
+    check('saving-clears-the-unsaved-guard', !leaving() && !document.title.startsWith('•'), `title="${document.title}"`);
+    document.querySelector('[data-shape="cone"]').click();
+    check('editing-after-a-save-is-unsaved-again', leaving(), 'guard on');
+
+    const idbGet = () => new Promise(resolve => {
+        const req = indexedDB.open('holodeck', 1);
+        req.onerror = () => resolve(undefined);
+        req.onsuccess = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains('kv')) { db.close(); resolve(undefined); return; }
+            const get = db.transaction('kv').objectStore('kv').get('autosave');
+            get.onsuccess = () => { db.close(); resolve(get.result); };
+            get.onerror = () => { db.close(); resolve(undefined); };
+        };
+    });
+    window.HOLODECK_AUTOSAVE_MS = 100;
+    clearScene();
+    await importViaInput('auto.stl', asciiStl(box(20, 10, 30)));
+    await new Promise(r => setTimeout(r, 600));
+    const record = await idbGet();
+    const recordState = record && JSON.parse(record.json);
+    const recordShapes = recordState && recordState.undoStack[recordState.undoStack.length - 1].shapes.length;
+    check('edits-are-autosaved-to-indexeddb', recordShapes === 1 && Object.keys(recordState.assets).length >= 1, `shapes=${recordShapes}`);
+
+    // A second copy of the app (no harness) must offer the session back.
+    async function loadFrame() {
+        const f = document.createElement('iframe');
+        f.style.cssText = 'position:fixed;left:-10000px;top:0;width:900px;height:700px;';
+        f.src = 'index.html?noharness=1';
+        document.body.appendChild(f);
+        await new Promise(r => f.addEventListener('load', r));
+        for (let i = 0; i < 80 && !f.contentDocument.getElementById('restore-banner')?.classList.contains('active'); i++) await new Promise(r => setTimeout(r, 100));
+        return f;
+    }
+    const frame = await loadFrame();
+    const fdoc = frame.contentDocument;
+    const banner = fdoc.getElementById('restore-banner');
+    check('a-second-session-offers-to-restore', banner.classList.contains('active') && /1 shape/.test(fdoc.getElementById('restore-text').textContent),
+        fdoc.getElementById('restore-text').textContent);
+    fdoc.getElementById('restore-yes').click();
+    await new Promise(r => setTimeout(r, 800));
+    const restoreStatus = fdoc.getElementById('status-bar').innerText.trim();
+    const fblobs = [];
+    frame.contentWindow.URL.createObjectURL = b => { fblobs.push(b); return 'blob:x'; };
+    frame.contentWindow.HTMLAnchorElement.prototype.click = () => {};
+    fdoc.getElementById('export-stl').click();
+    for (let i = 0; i < 40 && !fdoc.getElementById('dlg-ok'); i++) await new Promise(r => setTimeout(r, 50));
+    fdoc.getElementById('dlg-format').value = 'stl-ascii';
+    fdoc.getElementById('dlg-ok').click();
+    await new Promise(r => setTimeout(r, 300));
+    const restoredText = fblobs.length ? await fblobs[0].text() : '';
+    check('restore-brings-the-imported-shape-back', /Previous session restored/.test(restoreStatus) && (restoredText.match(/facet normal/g) || []).length === 12,
+        `status="${fdoc.getElementById('status-bar').innerText.trim()}" facets=${(restoredText.match(/facet normal/g) || []).length}`);
+    check('a-restored-session-counts-as-unsaved', (() => { const ev = new frame.contentWindow.Event('beforeunload', { cancelable: true }); frame.contentWindow.dispatchEvent(ev); return ev.defaultPrevented; })(), 'guard on');
+    frame.remove();
+
+    const frame2 = await loadFrame();
+    frame2.contentDocument.getElementById('restore-no').click();
+    await new Promise(r => setTimeout(r, 400));
+    check('discarding-removes-the-autosave', (await idbGet()) === undefined && !frame2.contentDocument.getElementById('restore-banner').classList.contains('active'), 'record gone');
+    frame2.remove();
+    window.HOLODECK_AUTOSAVE_MS = undefined;
+
+    const unnamed = [...document.querySelectorAll('button')].filter(b => !((b.getAttribute('aria-label') || b.textContent || '').trim()));
+    check('every-button-has-an-accessible-name', unnamed.length === 0, unnamed.map(b => b.outerHTML.slice(0, 120)).join(' | ') || 'all named');
+    check('status-bar-is-a-live-region', byId('status-bar').getAttribute('aria-live') === 'polite', 'aria-live=polite');
+
+    check('no-uncaught-errors-after-polish', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }

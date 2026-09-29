@@ -164,6 +164,8 @@ input, textarea {
 #top-left-toolbar { top: 16px; left: 16px; }
 #top-toolbar { top: 16px; left: 50%; transform: translateX(-50%); }
 #left-sidebar { 
+    /* Stops above the variables panel and status bar, scrolling when the tools outgrow it. */
+    max-height: calc(100vh - 80px - 150px); overflow-y: auto;
     top: 80px; 
     left: 16px; 
     flex-direction: column; 
@@ -443,15 +445,24 @@ body.touch-mode .tool-select { min-height: 40px; }
    reserved bands rather than a flow: two rows across the top, the creation tools down the
    left under them, and a bottom strip for the status bar with the viewcube and variables
    sitting clear above it. Measured with test/measure-layout so nothing overlaps. */
+/* Mid-size screens: the file toolbar is wide enough to run into the centred tool row, so the
+   tool row drops beneath it, and the creation tools move down to match. */
+@media (max-width: 1500px) and (min-width: 769px) {
+    #top-toolbar { top: 80px; left: 16px; transform: none; }
+    #left-sidebar { top: 144px; max-height: calc(100vh - 144px - 150px); }
+}
+
 @media (max-width: 768px) {
     .tool-btn { padding: 6px 10px; font-size: 11px; }
     .icon-btn { width: 32px; height: 32px; padding: 6px; }
     .toolbar { gap: 6px; padding: 6px 8px; }
+    .toolbar-group { gap: 4px; }
+    #top-left-toolbar .separator { display: none; }
 
     /* Row 1: file/history on the left, theme and panel toggles on the right. */
     #top-left-toolbar { top: 8px; left: 8px; }
     #theme-toggles { top: 8px; right: 8px; gap: 4px; }
-    #color-theme-select { min-width: 0; width: 76px; font-size: 10px; padding: 4px 6px; }
+    #color-theme-select { min-width: 0; width: 60px; font-size: 10px; padding: 4px 6px; }
 
     /* Row 2: transform and boolean tools, free to wrap onto a second line. The row offsets
        leave space for the taller touch-mode buttons below. */
@@ -522,3 +533,73 @@ body.touch-mode .tool-select { min-height: 40px; }
     display: flex;
     justify-content: space-between;
 }
+
+/* Dialogs & drop overlay */
+.dialog-overlay {
+    position: fixed; inset: 0; z-index: 20000; display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.45); padding: 16px;
+}
+.dialog { width: min(420px, 100%); max-height: 90vh; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; color: var(--text-main); }
+.dialog h3 { margin: 0; }
+.dialog-message { margin: 0; color: var(--text-muted); font-size: 13px; }
+.dialog-row { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.dialog-row small { color: var(--text-muted); }
+.dialog-row input[type="checkbox"] { align-self: flex-start; }
+.dialog-row input:not([type="checkbox"]), .dialog-row select {
+    background: var(--btn-bg); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px; font: inherit;
+}
+.dialog.invalid .dialog-row input:invalid { border-color: #e53e3e; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.dialog-actions .tool-btn { width: auto; padding: 8px 16px; }
+.dialog-actions .primary { background: var(--accent); color: #fff; }
+
+#drop-overlay {
+    position: fixed; inset: 12px; z-index: 19000; display: none; align-items: center; justify-content: center;
+    border: 3px dashed var(--accent); border-radius: 16px; background: rgba(0, 0, 0, 0.35); color: #fff;
+    font-size: 20px; pointer-events: none;
+}
+#drop-overlay.active { display: flex; }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.prop-row.triple { gap: 4px; }
+.prop-row.triple label { width: 38px; flex: none; }
+.prop-row.triple input[type="text"] { width: 0; flex: 1; min-width: 0; padding: 4px 2px; }
+
+#drag-hud {
+    position: fixed; z-index: 15000; display: none; pointer-events: none; white-space: nowrap;
+    padding: 4px 8px; border-radius: 6px; font: 12px/1.3 'Inter', sans-serif; color: var(--text-main);
+    background: var(--bg-panel); border: 1px solid var(--border-color); box-shadow: var(--shadow);
+}
+#drag-hud.active { display: block; }
+
+.measure-label {
+    padding: 2px 6px; border-radius: 4px; font: 600 12px 'Inter', sans-serif; white-space: nowrap;
+    color: #fff; background: rgba(0, 0, 0, 0.75); border: 1px solid var(--accent);
+}
+.measure-label small { display: block; font-weight: 400; opacity: 0.8; }
+
+body.busy, body.busy * { cursor: progress !important; }
+body.busy #status-bar .status-icon { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.dialog.wide { width: min(560px, 100%); }
+.dialog h4 { margin: 8px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); }
+.shortcut-list { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 13px; }
+.shortcut-list dt { white-space: nowrap; }
+.shortcut-list dd { margin: 0; }
+kbd {
+    display: inline-block; min-width: 1.4em; padding: 1px 6px; text-align: center; font: 600 11px 'Inter', sans-serif;
+    border: 1px solid var(--border-color); border-bottom-width: 2px; border-radius: 4px; background: var(--btn-bg); color: var(--text-main);
+}
+
+#restore-banner {
+    position: fixed; top: 140px; left: 50%; transform: translateX(-50%); z-index: 18000; display: none; align-items: center; gap: 12px;
+    padding: 10px 16px; max-width: calc(100vw - 32px); color: var(--text-main); font-size: 13px;
+}
+#restore-banner.active { display: flex; flex-wrap: wrap; justify-content: center; }
+#restore-banner .tool-btn { width: auto; padding: 6px 12px; }
+
+/* No keyboard to list shortcuts for on a phone, and the room is needed by the toolbars. */
+@media (max-width: 768px) { #btn-help { display: none; } }
+body.touch-mode #btn-help { display: none; }

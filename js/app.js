@@ -1,4 +1,11 @@
-import { CSG } from 'https://cdn.jsdelivr.net/npm/three-csg-ts@3.1.11/+esm';
+import { CSG } from '../vendor/three-csg-ts/csg.js';
+import { importFile, importFormatOf, convertImported, UNIT_MM, ImportError, encodePositions, decodePositions } from './importers.js';
+import { showFormDialog, showInfoDialog, loadPrefs, savePrefs, describeTransform, describeMeasurement } from './ui.js';
+import { kvGet, kvPut, kvDelete } from './storage.js';
+import { EXPORT_FORMATS, countTriangles } from './exporters.js';
+import { evaluateParts } from './csg-core.js';
+import { analyzeMesh, repairMesh, describeHealth } from './meshtools.js';
+import { roundedBox, revolveProfile, mirrorPositions, flipWinding, signedVolume } from './modeling.js';
 
 // Basic Three.js setup
 let scene, camera, renderer, controls, transformControl, selectionBox;
@@ -67,6 +74,19 @@ let wirePoints = [];
 let wirePreviewLine = null;
 let wirePreviewSphere = null;
 
+// Sketch tool state
+let isSketchMode = false;
+let sketchPoints = [];
+let sketchLine = null;
+
+// Measure tool state
+let isMeasureMode = false;
+let measurePending = null;   // first point of a measurement in progress
+let measureGroup = null;
+let measureMarkers = [];
+
+let cloneShape = null; // deepCloneShape, hoisted out of setupToolbar for the modelling tools
+
 // BOM state
 let bomItems = [];
 function renderBOM() {
@@ -122,7 +142,8 @@ function renderBOM() {
         });
         
         const delBtn = document.createElement('button');
-        delBtn.innerHTML = '<i class="fas fa-trash"></i>';
+        delBtn.innerHTML = '<i class="fas fa-trash" aria-hidden="true"></i>';
+        delBtn.setAttribute('aria-label', `Remove ${item.name} from the bill of materials`);
         delBtn.style.background = 'none';
         delBtn.style.border = 'none';
         delBtn.style.cursor = 'pointer';
@@ -188,6 +209,7 @@ function init() {
     transformControl = new THREE.TransformControls(activeCamera, renderer.domElement);
     transformControl.addEventListener('dragging-changed', function (event) {
         controls.enabled = !event.value;
+        document.getElementById('drag-hud')?.classList.toggle('active', !!event.value);
         if (event.value && selectedShape) {
             dragStartScale.copy(selectedShape.scale);
         } else if (!event.value && selectedShape) {
@@ -200,6 +222,8 @@ function init() {
     });
     
     transformControl.addEventListener('change', function () {
+        if (transformControl.dragging) updateDragHud();
+        if (transformControl.dragging && currentPropertyNode === selectedShape) syncTransformInputs();
         if (transformControl.getMode() === 'scale' && selectedShapes.length === 1 && transformControl.dragging) {
             let base = selectedShape.userData.baseSize;
             if (!base) {
@@ -304,6 +328,11 @@ function init() {
     
     // Save initial state
     historyManager.saveState();
+    markClean();
+
+    labelIconButtons();
+    document.getElementById('btn-help')?.addEventListener('click', showShortcuts);
+    offerRestore();
 }
 
 // === VARIABLES LOGIC ===
@@ -373,6 +402,7 @@ function renderVariables() {
         const nameInp = document.createElement('input');
         nameInp.type = 'text';
         nameInp.value = key;
+        nameInp.setAttribute('aria-label', `Variable name ${key}`);
         nameInp.style.width = '70px';
         
         const eq = document.createElement('span');
@@ -383,7 +413,9 @@ function renderVariables() {
         valInp.value = val;
         
         const delBtn = document.createElement('button');
-        delBtn.innerHTML = '<i class="fas fa-trash"></i>';
+        delBtn.innerHTML = '<i class="fas fa-trash" aria-hidden="true"></i>';
+        delBtn.setAttribute('aria-label', `Delete variable ${key}`);
+        valInp.setAttribute('aria-label', `Value of ${key}`);
         
         nameInp.addEventListener('change', (e) => {
             const newName = e.target.value.trim();
@@ -931,11 +963,7 @@ function setupPropertyInputs() {
                 }
 
                 // Changing what a part is re-cuts the assembly it belongs to.
-                let parentGroup = shape.parent;
-                while (parentGroup && parentGroup.type !== 'Scene') {
-                    if (parentGroup.userData.isComposite) rebuildCSG(parentGroup);
-                    parentGroup = parentGroup.parent;
-                }
+                rebuildAncestors(shape);
 
                 historyManager.saveState();
             }
@@ -981,11 +1009,7 @@ function setupPropertyInputs() {
                 
                 historyManager.saveState();
                 
-                let parentGroup = s.parent;
-                while (parentGroup && parentGroup.type !== 'Scene') {
-                    if (parentGroup.userData.isComposite) rebuildCSG(parentGroup);
-                    parentGroup = parentGroup.parent;
-                }
+                rebuildAncestors(s);
             } else {
                 input.value = (s.scale[axis] * s.userData.baseSize[axis]).toFixed(2);
             }
@@ -1115,6 +1139,7 @@ function setupToolbar() {
     bindClick('add-screw', () => addHardware('screw'));
     bindClick('wire-tool', () => {
         isWiringMode = !isWiringMode;
+        if (isWiringMode && isSketchMode) cancelSketch(true);
         if (isWiringMode) {
             wirePoints = [];
             updateStatus('Wire Mode: Click points to route wire. Press Enter to finish, Esc to cancel.');
@@ -1139,55 +1164,61 @@ function setupToolbar() {
         });
     });
     
-    bindClick('export-stl', exportSTL); bindClick('delete-selected', deleteSelected); bindClick('toggle-grid', toggleGrid);
+    bindClick('export-stl', exportModel); bindClick('delete-selected', deleteSelected); bindClick('toggle-grid', toggleGrid);
     bindClick('unit-toggle', toggleUnit);
     bindClick('group-shapes', groupShapes);
     bindClick('ungroup-shapes', ungroupShapes);
     bindClick('distribute-shapes', toggleDistributeMode);
     bindClick('align-mode', toggleAlignMode); bindClick('projection-toggle', toggleProjection);
     bindClick('center-selection', centerSelection);
+    bindClick('snap-toggle', () => setSnapEnabled(!snapEnabled)); bindClick('measure-tool', toggleMeasureMode);
+    setupTransformInputs();
+    bindClick('duplicate-selected', duplicateSelection); bindClick('mirror-selected', mirrorSelection);
+    bindClick('array-selected', arraySelection); bindClick('round-edges', roundEdges); bindClick('sketch-tool', toggleSketchMode);
     
     document.getElementById('snap-precision')?.addEventListener('change', (e) => { snapPrecision = parseFloat(e.target.value); updateTransformSnap(); });
 
     // History and Save/Load
     bindClick('btn-undo', () => historyManager.undo());
     bindClick('btn-redo', () => historyManager.redo());
-    bindClick('btn-save', () => {
-        const data = JSON.stringify({
-            version: "2.1",
-            thumbnail: captureThumbnail(),
-            undoStack: historyManager.undoStack,
-            redoStack: historyManager.redoStack
-        });
-        const blob = new Blob([data], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = 'project.holo'; a.click(); URL.revokeObjectURL(url);
-    });
+    bindClick('btn-save', saveProjectFile);
     const fileLoad = document.getElementById('file-load');
     if (fileLoad) {
         bindClick('btn-load', () => fileLoad.click());
         fileLoad.addEventListener('change', (e) => {
             const file = e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = (evt) => {
-                try {
-                    const data = JSON.parse(evt.target.result);
-                    if (data.version && data.undoStack) {
-                        historyManager.undoStack = data.undoStack;
-                        historyManager.redoStack = data.redoStack || [];
-                        if (historyManager.undoStack.length > 0) {
-                            historyManager.restoreState(historyManager.undoStack[historyManager.undoStack.length - 1]);
-                        }
-                        updateToolbarButtons();
-                        updateStatus('Project loaded successfully.');
-                    }
-                } catch (err) { updateStatus('Failed to load project.'); }
-            };
-            reader.readAsText(file);
             e.target.value = '';
+            if (file) openProjectFile(file);
         });
     }
+
+    // Import (STL / OBJ / SVG)
+    const fileImport = document.getElementById('file-import');
+    if (fileImport) {
+        bindClick('btn-import', () => fileImport.click());
+        fileImport.addEventListener('change', (e) => {
+            const files = Array.from(e.target.files);
+            e.target.value = '';
+            files.forEach(importModelFile);
+        });
+    }
+
+    // Drag and drop anywhere on the page: models are imported, projects are opened.
+    const dropOverlay = document.getElementById('drop-overlay');
+    let dragDepth = 0;
+    const hasFiles = e => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+    window.addEventListener('dragenter', (e) => { if (hasFiles(e)) { dragDepth++; dropOverlay?.classList.add('active'); } });
+    window.addEventListener('dragleave', (e) => { if (hasFiles(e) && --dragDepth <= 0) { dragDepth = 0; dropOverlay?.classList.remove('active'); } });
+    window.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+    window.addEventListener('drop', (e) => {
+        dragDepth = 0; dropOverlay?.classList.remove('active');
+        if (!e.dataTransfer?.files.length) return;
+        e.preventDefault();
+        Array.from(e.dataTransfer.files).forEach(file => {
+            if (/\.(holo|hldk)$/i.test(file.name)) openProjectFile(file);
+            else importModelFile(file);
+        });
+    });
 
     // Keyboard shortcuts & Clipboard
     let clipboard = [];
@@ -1242,11 +1273,15 @@ function setupToolbar() {
         return clone;
     }
 
+    cloneShape = deepCloneShape;
+
     window.addEventListener('keydown', (e) => {
         const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT';
         
         if (e.key === 'Escape') {
-            if (isWiringMode) cancelWire();
+            if (isMeasureMode) toggleMeasureMode();
+            else if (isSketchMode) cancelSketch();
+            else if (isWiringMode) cancelWire();
             else if (isAlignMode) toggleAlignMode();
             else if (isDistributeMode) toggleDistributeMode();
             else {
@@ -1258,6 +1293,8 @@ function setupToolbar() {
             }
         }
         
+        if (!isInput && e.key === '?') { e.preventDefault(); showShortcuts(); return; }
+        if (e.key === 'Enter' && isSketchMode) finishSketch();
         if (e.key === 'Enter' && isWiringMode) {
             if (wirePoints.length > 1) finalizeWire();
             else cancelWire();
@@ -1268,6 +1305,8 @@ function setupToolbar() {
             if (!isInput) {
                 if (e.key === 'z') { e.preventDefault(); if (e.shiftKey) historyManager.redo(); else historyManager.undo(); }
                 if (e.key === 'y') { e.preventDefault(); historyManager.redo(); }
+                if (e.key === 'd' || e.key === 'D') { e.preventDefault(); duplicateSelection(); }
+                if (e.key === 'a' || e.key === 'A') { e.preventDefault(); if (shapes.length) selectAll(shapes.slice()); }
                 if (e.key === 'g' || e.key === 'G') {
                     e.preventDefault();
                     if (e.shiftKey) ungroupShapes();
@@ -1359,6 +1398,7 @@ function setupToolbar() {
                 
                 if (transformControl.object) transformControl.updateMatrixWorld();
                 updateDimensions();
+                syncTransformInputs();
                 
                 historyManager.saveState();
             }
@@ -1368,6 +1408,629 @@ function setupToolbar() {
 
 // Unscaled size of a geometry, used as the divisor for the dimension inputs.
 // Never returns 0 on an axis: a flat geometry would make scale = dim / 0.
+// Imported meshes are kept out of the per-action history states: every saveState() would
+// otherwise copy a multi-megabyte vertex array. A shape stores only an importId, and the
+// vertices live here once, keyed by that id. They are embedded in the .holo file as `assets`.
+const importedMeshes = new Map(); // importId -> Float32Array of triangle-soup positions
+
+// Only meshes some history state still refers to are written out, so a project does not
+// keep carrying an import the user deleted and undid past long ago.
+function collectImportIds(node, into = new Set()) {
+    if (Array.isArray(node)) node.forEach(n => collectImportIds(n, into));
+    else if (node && typeof node === 'object') {
+        if (node.importId) into.add(node.importId);
+        Object.values(node).forEach(v => { if (v && typeof v === 'object') collectImportIds(v, into); });
+    }
+    return into;
+}
+
+function serializeImportedMeshes(states) {
+    const assets = {};
+    collectImportIds(states).forEach(id => {
+        if (importedMeshes.has(id)) assets[id] = encodePositions(importedMeshes.get(id));
+    });
+    return assets;
+}
+
+function buildImportedGeometry(positions) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3));
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    return geometry;
+}
+
+// --- Project files, dirty tracking and autosave ---
+const AUTOSAVE_KEY = 'autosave';
+let isDirty = false;
+let autosaveTimer = null;
+let autosavePaused = true; // until the previous session has been offered for restoring
+
+function buildProjectJson(withThumbnail = true) {
+    return JSON.stringify({
+        version: "2.2",
+        thumbnail: withThumbnail ? captureThumbnail() : '',
+        assets: serializeImportedMeshes([historyManager.undoStack, historyManager.redoStack]),
+        undoStack: historyManager.undoStack,
+        redoStack: historyManager.redoStack
+    });
+}
+
+function updateTitle() { document.title = (isDirty ? '• ' : '') + 'Holodeck - Web CAD'; }
+
+function markClean() { isDirty = false; clearTimeout(autosaveTimer); updateTitle(); }
+
+function markDirty() {
+    isDirty = true; updateTitle();
+    if (autosavePaused) return;
+    clearTimeout(autosaveTimer);
+    const delay = typeof window.HOLODECK_AUTOSAVE_MS === 'number' ? window.HOLODECK_AUTOSAVE_MS : 2000;
+    autosaveTimer = setTimeout(() => kvPut(AUTOSAVE_KEY, { savedAt: Date.now(), json: buildProjectJson(false) }), delay);
+}
+
+function saveProjectFile() {
+    const blob = new Blob([buildProjectJson()], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'project.holo'; a.click(); URL.revokeObjectURL(url);
+    markClean();
+    kvDelete(AUTOSAVE_KEY); // what was saved to disk no longer needs recovering
+    updateStatus('Project saved.');
+}
+
+// Anything unsaved is lost on close, so ask the browser to confirm.
+window.addEventListener('beforeunload', (e) => {
+    if (!isDirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+});
+
+function loadProjectData(data) {
+    if (!(data.version && data.undoStack)) throw new Error('not a Holodeck project');
+    Object.entries(data.assets || {}).forEach(([id, b64]) => importedMeshes.set(id, decodePositions(b64)));
+    historyManager.undoStack = data.undoStack;
+    historyManager.redoStack = data.redoStack || [];
+    if (historyManager.undoStack.length > 0) {
+        historyManager.restoreState(historyManager.undoStack[historyManager.undoStack.length - 1]);
+    }
+    updateToolbarButtons();
+}
+
+function openProjectFile(file) {
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+        try {
+            loadProjectData(JSON.parse(evt.target.result));
+            markClean();
+            updateStatus('Project loaded successfully.');
+        } catch (err) { console.error(err); updateStatus('Failed to load project.'); }
+    };
+    reader.readAsText(file);
+}
+
+function timeAgo(ms) {
+    const m = Math.round((Date.now() - ms) / 60000);
+    if (m < 1) return 'moments ago';
+    if (m < 60) return `${m} minute${m === 1 ? '' : 's'} ago`;
+    const h = Math.round(m / 60);
+    return h < 48 ? `${h} hour${h === 1 ? '' : 's'} ago` : `${Math.round(h / 24)} days ago`;
+}
+
+// If the last session ended without a save, offer to bring it back. Autosave stays paused
+// until the person answers, so the offer is never overwritten by the empty new session.
+async function offerRestore() {
+    const banner = document.getElementById('restore-banner');
+    const resume = () => { autosavePaused = false; banner?.classList.remove('active'); };
+    const record = await kvGet(AUTOSAVE_KEY);
+    let data = null;
+    try { data = record && JSON.parse(record.json); } catch (e) { /* corrupt: treated as none */ }
+    const last = data && data.undoStack && data.undoStack[data.undoStack.length - 1];
+    if (!last || !banner || (!(last.shapes && last.shapes.length) && !Object.keys(last.variables || {}).length)) {
+        if (record) kvDelete(AUTOSAVE_KEY);
+        resume();
+        return;
+    }
+    const n = last.shapes.length;
+    document.getElementById('restore-text').textContent = `Restore your unsaved session from ${timeAgo(record.savedAt)}? (${n} shape${n === 1 ? '' : 's'})`;
+    banner.classList.add('active');
+    document.getElementById('restore-yes').onclick = () => {
+        try { loadProjectData(data); updateStatus('Previous session restored.'); } catch (e) { console.error(e); updateStatus('Could not restore the previous session.'); }
+        resume(); markDirty();
+    };
+    document.getElementById('restore-no').onclick = () => { kvDelete(AUTOSAVE_KEY); resume(); };
+}
+
+const SHORTCUTS = [
+    { heading: 'Project', rows: [['Ctrl+S', 'Save project (.holo)'], ['Ctrl+Z', 'Undo'], ['Ctrl+Shift+Z / Ctrl+Y', 'Redo'], ['?', 'Show this list']] },
+    { heading: 'Selection & editing', rows: [
+        ['Click', 'Select a shape'], ['Ctrl+Click', 'Add to / remove from the selection'], ['Shift+Drag', 'Box-select'],
+        ['Ctrl+A', 'Select everything'], ['Esc', 'Clear the selection, or leave the active tool'], ['Delete', 'Delete the selection'],
+        ['Ctrl+C / Ctrl+X / Ctrl+V', 'Copy, cut, paste'], ['Ctrl+D', 'Duplicate'], ['Ctrl+G', 'Group'], ['Ctrl+Shift+G', 'Ungroup'] ] },
+    { heading: 'Moving', rows: [
+        ['Arrows', 'Nudge along the screen axes by the snap size'], ['Shift+Arrows', 'Nudge 10× the snap size'],
+        ['Ctrl+Arrows', 'Nudge half the snap size'], ['Ctrl+Shift+Arrows', 'Nudge a tenth of the snap size'],
+        ['Alt (hold)', 'Bypass snapping while dragging'] ] },
+    { heading: 'Tools', rows: [
+        ['Sketch: Click, Enter', 'Add corners, then finish and extrude or revolve'], ['Wire: Click, Enter', 'Add route points, then finish'],
+        ['Measure: Click, Click', 'Distance between two points (snaps to corners)'], ['Drop a file', 'Import STL / OBJ / SVG, or open a .holo project'] ] }
+];
+function showShortcuts() { showInfoDialog({ title: 'Keyboard shortcuts', sections: SHORTCUTS }); }
+
+function labelIconButtons() {
+    document.querySelectorAll('button[title]:not([aria-label])').forEach(b => b.setAttribute('aria-label', b.getAttribute('title')));
+    document.querySelectorAll('.fas, .far, .fab').forEach(i => i.setAttribute('aria-hidden', 'true'));
+    const roles = { 'top-left-toolbar': 'File and history', 'top-toolbar': 'Transform and arrange', 'left-sidebar': 'Create and modify', 'theme-toggles': 'Appearance and panels' };
+    Object.entries(roles).forEach(([id, label]) => {
+        const el = document.getElementById(id);
+        if (el) { el.setAttribute('role', 'toolbar'); el.setAttribute('aria-label', label); }
+    });
+}
+
+async function importModelFile(file) {
+    const kind = importFormatOf(file.name);
+    if (!kind) { updateStatus(`Import failed: unsupported file type "${file.name}". Use STL, OBJ or SVG.`); return; }
+
+    const prefs = loadPrefs('import', { units: 'mm', up: 'y', depth: 5, recenter: true });
+    const isSvg = kind === 'svg';
+    const opts = await showFormDialog({
+        title: `Import ${file.name}`,
+        confirmLabel: 'Import',
+        fields: [
+            { id: 'units', label: 'File units', type: 'select', value: prefs.units, showIf: () => !isSvg,
+              options: [['mm', 'Millimetres'], ['cm', 'Centimetres'], ['in', 'Inches'], ['m', 'Metres']] },
+            { id: 'up', label: 'Up axis', type: 'select', value: prefs.up, showIf: () => !isSvg,
+              options: [['y', 'Y up (Holodeck, most game/OBJ tools)'], ['z', 'Z up (most CAD, slicers)']] },
+            { id: 'depth', label: 'Extrude depth', type: 'number', unit: 'mm', value: prefs.depth, min: 0.01, step: 0.5, showIf: () => isSvg,
+              hint: 'SVG shapes are extruded; 1 SVG unit = 1 CSS px (0.2646 mm).' },
+            { id: 'recenter', label: 'Centre on origin, resting on the grid', type: 'checkbox', value: prefs.recenter }
+        ]
+    });
+    if (!opts) { updateStatus('Import cancelled.'); return; }
+    savePrefs('import', { units: isSvg ? prefs.units : opts.units, up: isSvg ? prefs.up : opts.up, depth: isSvg ? opts.depth : prefs.depth, recenter: opts.recenter });
+
+    updateStatus(`Importing ${file.name}...`);
+    try {
+        const result = await importFile(file, { svgDepthMm: opts.depth });
+        let positions = convertImported(result.positions, isSvg ? {} : { unitsMm: UNIT_MM[opts.units], zUp: opts.up === 'z' });
+        // Booleans need clean closed solids, so say up front when a mesh is not one, and fix
+        // the two things that can be fixed without guessing. Very large meshes skip the check.
+        let note = '';
+        if (positions.length / 9 <= 300000) {
+            const repaired = repairMesh(positions);
+            positions = repaired.positions;
+            note = describeHealth(analyzeMesh(positions), repaired);
+        } else note = 'Note: too large to check for holes.';
+        addImportedMesh({ positions, format: result.format, recenter: opts.recenter, note }, file.name.replace(/\.[^.]+$/, ''));
+    } catch (err) {
+        if (!(err instanceof ImportError)) console.error(err);
+        updateStatus(`Import failed: ${err instanceof ImportError ? err.message : 'could not read ' + file.name}`);
+    }
+}
+
+// `positions` arrive in scene units (cm). By default the mesh is moved so its bounding-box
+// centre is the mesh origin — it then moves and scales about its middle like any other
+// shape — and stood on the grid. With `keepPlace` the geometry is centred the same way but
+// the mesh is put back where the positions were (for results built in world space, like a
+// mirror or an extrusion); with recenter false the file's coordinates are used verbatim.
+function addImportedMesh({ positions, format, recenter = true, keepPlace = false, color = 0x9aa7b8, focus = true, note = '' }, name) {
+    const geometry = buildImportedGeometry(positions);
+    const center = new THREE.Vector3();
+    if (recenter || keepPlace) { geometry.boundingBox.getCenter(center); geometry.translate(-center.x, -center.y, -center.z); }
+    const stored = Float32Array.from(geometry.attributes.position.array);
+    geometry.computeBoundingBox();
+    const size = new THREE.Vector3(); geometry.boundingBox.getSize(size);
+    if (!(size.x > 0 || size.y > 0 || size.z > 0) || [size.x, size.y, size.z].some(v => !isFinite(v))) {
+        geometry.dispose();
+        throw new ImportError('The file has no usable geometry.');
+    }
+
+    const importId = THREE.MathUtils.generateUUID();
+    importedMeshes.set(importId, stored);
+
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+        color, transparent: true, opacity: 0.85, roughness: 0.4, metalness: 0.1
+    }));
+    if (keepPlace) mesh.position.copy(center);
+    else if (recenter) mesh.position.set(0, size.y / 2, 0);
+    mesh.userData = {
+        type: 'imported', importId, importFormat: format, originalGeometry: geometry,
+        bindings: {}, isComposite: false, isHole: false, baseSize: measureBaseSize(geometry)
+    };
+    mesh.uuid = THREE.MathUtils.generateUUID();
+    mesh.name = name || `Imported ${format}`;
+
+    scene.add(mesh);
+    shapes.push(mesh);
+    selectShape(mesh);
+    const tris = stored.length / 9;
+    updateStatus(`${format === 'STL' || format === 'OBJ' || format === 'SVG' ? 'Imported' : 'Created'} ${mesh.name} (${format}, ${tris.toLocaleString()} triangles, ${(size.x * 10).toFixed(1)} × ${(size.y * 10).toFixed(1)} × ${(size.z * 10).toFixed(1)} mm)${note ? '. ' + note : ''}`);
+    historyManager.saveState();
+    if (focus) centerSelection();
+    return mesh;
+}
+
+// A mesh's triangles in world space, outward-wound, as a flat non-indexed soup.
+function worldPositionsOf(mesh) {
+    mesh.updateMatrixWorld(true);
+    const g = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
+    g.applyMatrix4(mesh.matrixWorld);
+    const p = Float32Array.from(g.attributes.position.array);
+    g.dispose();
+    return mesh.matrixWorld.determinant() < 0 ? flipWinding(p) : p;
+}
+
+// === MODELLING TOOLS ===
+const cmPerSnap = () => (unitMode === 'inch' ? snapPrecision * 2.54 : snapPrecision / 10);
+
+function addClonedShape(clone) {
+    scene.add(clone);
+    shapes.push(clone);
+    addBomRowsForPaste(clone);
+}
+
+function selectAll(list) {
+    selectedShapes = []; selectedShape = null; transformControl.detach();
+    list.forEach(m => selectShape(m, { ctrlKey: true }));
+}
+
+function duplicateSelection() {
+    if (selectedShapes.length === 0) { updateStatus('Select something to duplicate.'); return; }
+    const offset = cmPerSnap() * 2;
+    const clones = selectedShapes.map(src => {
+        const c = cloneShape(src);
+        c.position.x += offset; c.position.z += offset;
+        addClonedShape(c);
+        return c;
+    });
+    renderBOM();
+    selectAll(clones);
+    historyManager.saveState();
+    updateStatus(`Duplicated ${clones.length} shape(s).`);
+}
+
+async function mirrorSelection() {
+    if (selectedShapes.length === 0) { updateStatus('Select something to mirror.'); return; }
+    const v = await showFormDialog({
+        title: 'Mirror', confirmLabel: 'Mirror',
+        message: 'Adds a mirrored copy, reflected across a plane through the world origin.',
+        fields: [{ id: 'axis', label: 'Mirror plane', type: 'select', value: 'x',
+            options: [['x', 'YZ plane (flip left/right)'], ['y', 'XZ plane (flip up/down)'], ['z', 'XY plane (flip front/back)']] }]
+    });
+    if (!v) return;
+    const created = [];
+    selectedShapes.slice().forEach(src => {
+        const mat = Array.isArray(src.material) ? src.material[0] : src.material;
+        created.push(addImportedMesh({
+            positions: mirrorPositions(worldPositionsOf(src), v.axis), format: 'Mirror', keepPlace: true,
+            color: mat.color.getHex(), focus: false
+        }, `${src.name} (mirror ${v.axis.toUpperCase()})`));
+    });
+    selectAll(created);
+    updateStatus(`Mirrored ${created.length} shape(s) across the ${v.axis.toUpperCase()} plane.`);
+}
+
+async function arraySelection() {
+    if (selectedShapes.length === 0) { updateStatus('Select something to array.'); return; }
+    const prefs = loadPrefs('array', { kind: 'linear', count: 3, dx: 20, dy: 0, dz: 0, axis: 'y', angle: 360 });
+    const linear = f => f.kind === 'linear';
+    const v = await showFormDialog({
+        title: 'Array', confirmLabel: 'Create array',
+        fields: [
+            { id: 'kind', label: 'Pattern', type: 'select', value: prefs.kind, options: [['linear', 'Linear'], ['polar', 'Polar (around an axis)']] },
+            { id: 'count', label: 'Total copies (including the original)', type: 'number', value: prefs.count, min: 2, max: 200, step: 1 },
+            { id: 'dx', label: 'Step X', unit: 'mm', type: 'number', value: prefs.dx, step: 1, showIf: linear },
+            { id: 'dy', label: 'Step Y', unit: 'mm', type: 'number', value: prefs.dy, step: 1, showIf: linear },
+            { id: 'dz', label: 'Step Z', unit: 'mm', type: 'number', value: prefs.dz, step: 1, showIf: linear },
+            { id: 'axis', label: 'Axis through the world origin', type: 'select', value: prefs.axis, showIf: f => !linear(f),
+              options: [['x', 'X'], ['y', 'Y (vertical)'], ['z', 'Z']] },
+            { id: 'angle', label: 'Sweep angle', unit: '°', type: 'number', value: prefs.angle, min: 1, max: 360, step: 5, showIf: f => !linear(f),
+              hint: '360 spreads the copies evenly round a full circle; less places the last copy at that angle.' }
+        ]
+    });
+    if (!v) return;
+    savePrefs('array', v);
+    const count = Math.round(v.count);
+    const sources = selectedShapes.slice();
+    const created = [];
+    const axisVec = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) }[v.axis];
+    const step = v.angle >= 360 ? v.angle / count : v.angle / (count - 1);
+    for (let i = 1; i < count; i++) {
+        sources.forEach(src => {
+            const c = cloneShape(src);
+            if (v.kind === 'linear') {
+                c.position.add(new THREE.Vector3(v.dx, v.dy, v.dz).multiplyScalar(i / 10));
+            } else {
+                const q = new THREE.Quaternion().setFromAxisAngle(axisVec, THREE.MathUtils.degToRad(step * i));
+                c.position.applyQuaternion(q);
+                c.quaternion.premultiply(q);
+            }
+            c.updateMatrix(); c.updateMatrixWorld(true);
+            addClonedShape(c);
+            created.push(c);
+        });
+    }
+    renderBOM();
+    selectAll(sources.concat(created));
+    historyManager.saveState();
+    updateStatus(`Array created: ${created.length} new shape(s).`);
+}
+
+// Fillet / chamfer for cubes. Stored as parameters on the shape (userData.edge), so the
+// rounded geometry is regenerated on undo and load and nothing has to be saved as vertices.
+function buildRoundedCubeGeometry(edge) {
+    const { positions, normals } = roundedBox(2, 2, 2, edge.radius, edge.style, edge.segments);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    if (normals) g.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    else g.computeVertexNormals();
+    g.computeBoundingBox();
+    return g;
+}
+
+async function roundEdges() {
+    const node = (currentPropertyNode && selectedShapes.length <= 1 ? currentPropertyNode : null)
+        || (selectedShapes.length === 1 ? selectedShapes[0] : null);
+    if (!node || node.userData.type !== 'cube' || node.userData.isComposite) {
+        updateStatus('Select a single cube (or pick one inside a group) to round its edges.');
+        return;
+    }
+    const meanScale = (node.scale.x + node.scale.y + node.scale.z) / 3;
+    const cur = node.userData.edge;
+    const v = await showFormDialog({
+        title: 'Round or chamfer edges', confirmLabel: 'Apply',
+        message: 'Sizes are approximate on a box that has been stretched unevenly.',
+        fields: [
+            { id: 'style', label: 'Edge style', type: 'select', value: cur ? cur.style : 'fillet',
+              options: [['fillet', 'Fillet (rounded)'], ['chamfer', 'Chamfer (bevelled)'], ['none', 'Sharp (remove)']] },
+            { id: 'radius', label: 'Size', unit: 'mm', type: 'number', min: 0.1, step: 0.5,
+              value: cur ? +(cur.radius * meanScale * 10).toFixed(2) : 2, showIf: f => f.style !== 'none' },
+            { id: 'segments', label: 'Smoothness', type: 'number', min: 2, max: 12, step: 1, value: cur ? cur.segments : 5, showIf: f => f.style === 'fillet' }
+        ]
+    });
+    if (!v) return;
+    node.userData.edge = v.style === 'none' ? null
+        : { style: v.style, radius: v.radius / 10 / meanScale, segments: Math.round(v.segments) || 5 };
+    const geometry = rebuildLeafGeometry(node.userData);
+    if (node.geometry) node.geometry.dispose();
+    node.geometry = geometry;
+    node.userData.originalGeometry = geometry;
+    node.userData.baseSize = measureBaseSize(geometry);
+    rebuildAncestors(node);
+    selectPropertyNode(node);
+    updateDimensions();
+    historyManager.saveState();
+    updateStatus(v.style === 'none' ? 'Edges sharpened.' : `Applied ${v.style} of ${v.radius} mm.`);
+}
+
+// --- Precision: numeric transform fields, drag readout, snapping, measuring ---
+const TRANSFORM_INPUTS = ['obj-px', 'obj-py', 'obj-pz', 'obj-rx', 'obj-ry', 'obj-rz'];
+
+function syncTransformInputs() {
+    const node = currentPropertyNode;
+    if (!node) return;
+    const set = (id, v) => {
+        const el = document.getElementById(id);
+        if (el && document.activeElement !== el) el.value = String(+v.toFixed(3));
+    };
+    const e = new THREE.Euler().setFromQuaternion(node.quaternion, 'XYZ');
+    set('obj-px', node.position.x); set('obj-py', node.position.y); set('obj-pz', node.position.z);
+    set('obj-rx', THREE.MathUtils.radToDeg(e.x)); set('obj-ry', THREE.MathUtils.radToDeg(e.y)); set('obj-rz', THREE.MathUtils.radToDeg(e.z));
+}
+
+function setupTransformInputs() {
+    // Holding Alt bypasses snapping for the drag in progress.
+    window.addEventListener('keydown', e => {
+        if (e.key === 'Alt' && snapEnabled && !e.repeat) { transformControl.setTranslationSnap(null); transformControl.setRotationSnap(null); }
+    });
+    window.addEventListener('keyup', e => {
+        if (e.key === 'Alt' && snapEnabled) { updateTransformSnap(); transformControl.setRotationSnap(THREE.MathUtils.degToRad(5)); }
+    });
+
+    TRANSFORM_INPUTS.forEach(id => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
+        input.addEventListener('change', () => {
+            const node = currentPropertyNode;
+            if (!node) return;
+            // Numbers, or an expression using the project's variables (evaluated once, not bound).
+            const raw = input.value.trim();
+            const value = isNaN(Number(raw)) ? evaluateExpression(raw, getResolvedVariables()) : Number(raw);
+            if (value === null || !isFinite(value)) { syncTransformInputs(); updateStatus(`"${raw}" is not a number.`); return; }
+            const num = k => { const v = evaluateExpression(document.getElementById(k).value.trim(), getResolvedVariables()); return v === null || !isFinite(v) ? 0 : v; };
+            node.position.set(num('obj-px'), num('obj-py'), num('obj-pz'));
+            node.quaternion.setFromEuler(new THREE.Euler(
+                THREE.MathUtils.degToRad(num('obj-rx')), THREE.MathUtils.degToRad(num('obj-ry')), THREE.MathUtils.degToRad(num('obj-rz')), 'XYZ'));
+            node.updateMatrix(); node.updateMatrixWorld(true);
+            rebuildAncestors(node);
+            if (transformControl.object) transformControl.updateMatrixWorld();
+            syncTransformInputs();
+            updateDimensions();
+            historyManager.saveState();
+        });
+    });
+}
+
+const snapLabel = () => {
+    if (unitMode === 'inch') return { 0.0625: '1/16 in', 0.125: '1/8 in', 0.25: '1/4 in', 0.5: '1/2 in', 1: '1 in', 2: '2 in' }[snapPrecision] || `${snapPrecision} in`;
+    return snapPrecision >= 10 ? `${snapPrecision / 10} cm` : `${snapPrecision} mm`;
+};
+
+function updateDragHud() {
+    const hud = document.getElementById('drag-hud');
+    const node = transformControl.object;
+    if (!hud || !node) return;
+    const e = new THREE.Euler().setFromQuaternion(node.quaternion, 'XYZ');
+    const base = node.userData.baseSize || { x: 1, y: 1, z: 1 };
+    hud.textContent = describeTransform(transformControl.getMode(), {
+        position: node.position.toArray(),
+        rotationDeg: [e.x, e.y, e.z].map(THREE.MathUtils.radToDeg),
+        size: [node.scale.x * base.x, node.scale.y * base.y, node.scale.z * base.z]
+    }, { enabled: snapEnabled, label: snapLabel() });
+}
+
+function setSnapEnabled(on) {
+    snapEnabled = on;
+    document.getElementById('snap-toggle')?.classList.toggle('active', on);
+    transformControl.setRotationSnap(on ? THREE.MathUtils.degToRad(5) : null);
+    updateTransformSnap();
+    updateStatus(on ? `Snapping on (${snapLabel()}).` : 'Snapping off.');
+}
+
+function clearMeasurements() {
+    if (measureGroup) {
+        scene.remove(measureGroup);
+        measureGroup.traverse(o => {
+            if (o.geometry) o.geometry.dispose();
+            if (o.material) o.material.dispose();
+            if (o.isCSS2DObject && o.element) o.element.remove();
+        });
+        measureGroup = null;
+    }
+    measurePending = null;
+}
+
+function toggleMeasureMode() {
+    isMeasureMode = !isMeasureMode;
+    document.getElementById('measure-tool')?.classList.toggle('active', isMeasureMode);
+    if (isMeasureMode) {
+        if (isWiringMode) cancelWire();
+        if (isSketchMode) cancelSketch(true);
+        updateStatus('Measure: click a point on a surface (it snaps to nearby corners), then a second point. Esc to finish.');
+    } else {
+        clearMeasurements();
+        updateStatus('Measure finished.');
+    }
+}
+
+// Where a click lands for measuring: the nearest corner of the face under the cursor when one
+// is close, else the surface point, else the ground. Distances need real corners to be useful.
+function measurePointAt(event) {
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, activeCamera);
+    const hit = raycaster.intersectObjects(shapes, false)[0];
+    if (hit) {
+        const tolerance = activeCamera.position.distanceTo(hit.point) * 0.03;
+        let best = null, bestD = tolerance;
+        const g = hit.object.geometry, pos = g.attributes.position;
+        [hit.face.a, hit.face.b, hit.face.c].forEach(i => {
+            const v = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(hit.object.matrixWorld);
+            const d = v.distanceTo(hit.point);
+            if (d < bestD) { bestD = d; best = v; }
+        });
+        return { point: best || hit.point.clone(), snapped: !!best };
+    }
+    const pt = groundPoint(event);
+    return pt ? { point: pt, snapped: true } : null;
+}
+
+function addMeasureMarker(point) {
+    if (!measureGroup) { measureGroup = new THREE.Group(); scene.add(measureGroup); }
+    const r = Math.max(0.05, activeCamera.position.distanceTo(point) * 0.012);
+    const m = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 12), new THREE.MeshBasicMaterial({ color: 0x00ffcc, depthTest: false }));
+    m.position.copy(point); m.renderOrder = 1000;
+    measureGroup.add(m);
+}
+
+function measureClick(event) {
+    const hit = measurePointAt(event);
+    if (!hit) return;
+    addMeasureMarker(hit.point);
+    if (!measurePending) {
+        measurePending = hit.point;
+        updateStatus('Measure: pick the second point.');
+        return;
+    }
+    const a = measurePending, b = hit.point;
+    measurePending = null;
+    const m = describeMeasurement(a.toArray(), b.toArray());
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]), new THREE.LineBasicMaterial({ color: 0x00ffcc, depthTest: false }));
+    line.renderOrder = 1000;
+    measureGroup.add(line);
+    const div = document.createElement('div');
+    div.className = 'measure-label';
+    div.textContent = m.text;
+    const small = document.createElement('small'); small.textContent = m.detail; div.appendChild(small);
+    const label = new THREE.CSS2DObject(div);
+    label.position.copy(a).lerp(b, 0.5);
+    measureGroup.add(label);
+    updateStatus(`Measured ${m.text} (${m.detail}). Click to measure again, Esc to finish.`);
+}
+
+// --- Sketch: draw a polygon on the ground, then extrude or revolve it ---
+function snapToGrid(pt) {
+    const g = cmPerSnap();
+    return new THREE.Vector3(Math.round(pt.x / g) * g, 0, Math.round(pt.z / g) * g);
+}
+
+function groundPoint(event) {
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, activeCamera);
+    const pt = new THREE.Vector3();
+    return raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), pt) ? snapToGrid(pt) : null;
+}
+
+function updateSketchLine(cursor = null) {
+    if (sketchLine) { scene.remove(sketchLine); sketchLine.geometry.dispose(); sketchLine = null; }
+    const pts = sketchPoints.map(p => p.clone().setY(0.02));
+    if (cursor) pts.push(cursor.clone().setY(0.02));
+    if (pts.length < 2) return;
+    sketchLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0x00ffcc }));
+    scene.add(sketchLine);
+}
+
+function toggleSketchMode() {
+    if (isSketchMode) { cancelSketch(); return; }
+    if (isWiringMode) cancelWire();
+    isSketchMode = true; sketchPoints = [];
+    document.getElementById('sketch-tool')?.classList.add('active');
+    updateStatus('Sketch: click to place corners on the ground (snapped). Click the first point or press Enter to finish, Esc to cancel.');
+}
+
+function cancelSketch(silent = false) {
+    isSketchMode = false; sketchPoints = [];
+    if (sketchLine) { scene.remove(sketchLine); sketchLine.geometry.dispose(); sketchLine = null; }
+    document.getElementById('sketch-tool')?.classList.remove('active');
+    if (!silent) updateStatus('Sketch cancelled.');
+}
+
+async function finishSketch() {
+    if (sketchPoints.length < 3) { updateStatus('A sketch needs at least three corners.'); return; }
+    const pts = sketchPoints.map(p => p.clone());
+    cancelSketch(true);
+    const prefs = loadPrefs('sketch', { op: 'extrude', depth: 10, segments: 48 });
+    const v = await showFormDialog({
+        title: 'Sketch to solid', confirmLabel: 'Create',
+        fields: [
+            { id: 'op', label: 'Operation', type: 'select', value: prefs.op,
+              options: [['extrude', 'Extrude upward'], ['revolve', 'Revolve around the Y axis']] },
+            { id: 'depth', label: 'Height', unit: 'mm', type: 'number', min: 0.1, step: 1, value: prefs.depth, showIf: f => f.op === 'extrude' },
+            { id: 'segments', label: 'Smoothness', type: 'number', min: 8, max: 128, step: 4, value: prefs.segments, showIf: f => f.op === 'revolve',
+              hint: 'Revolve uses distance from the Y axis as the radius and the drawing\'s top-view "up" as height. Keep every corner on one side of the axis.' }
+        ]
+    });
+    if (!v) { updateStatus('Sketch discarded.'); return; }
+    savePrefs('sketch', v);
+    try {
+        let positions;
+        if (v.op === 'extrude') {
+            // Shape space is XY extruded along +Z; rotating -90° about X makes Z the up axis,
+            // and negating y first makes the drawing read the same way from above.
+            const shape = new THREE.Shape(pts.map(p => new THREE.Vector2(p.x, -p.z)));
+            const g = new THREE.ExtrudeGeometry(shape, { depth: v.depth / 10, bevelEnabled: false });
+            g.rotateX(-Math.PI / 2);
+            positions = Float32Array.from((g.index ? g.toNonIndexed() : g).attributes.position.array);
+            g.dispose();
+            for (let i = 0; i < positions.length; i++) if (Math.abs(positions[i]) < 1e-6) positions[i] = 0; // rotation noise
+            if (signedVolume(positions) < 0) positions = flipWinding(positions);
+        } else {
+            positions = revolveProfile(pts.map(p => [p.x, -p.z]), Math.round(v.segments));
+        }
+        addImportedMesh({ positions, format: 'Sketch', keepPlace: true, focus: false }, v.op === 'extrude' ? 'Extrusion' : 'Revolve');
+    } catch (err) {
+        updateStatus(`Sketch failed: ${err.message}`);
+    }
+}
+
 function measureBaseSize(geometry) {
     geometry.computeBoundingBox();
     const sz = new THREE.Vector3();
@@ -1999,6 +2662,7 @@ function selectPropertyNode(node) {
         input.value = (node.userData.bindings && node.userData.bindings[axis]) || (node.scale[axis] * base[axis]).toFixed(2);
     };
     setInput('obj-w', 'x'); setInput('obj-h', 'y'); setInput('obj-l', 'z');
+    syncTransformInputs();
     
     const container = document.getElementById('preview-container');
     if (container.clientWidth > 0 && container.clientHeight > 0 && previewRenderer) {
@@ -2055,10 +2719,20 @@ function onPointerDown(event) {
     
     pointerDownPos.set(event.clientX, event.clientY);
     
-    if (isAlignMode || isDistributeMode) return;
+    if (isAlignMode || isDistributeMode || isMeasureMode) return;
     
     mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(mouse, activeCamera);
+
+    if (isSketchMode) {
+        const pt = groundPoint(event);
+        if (!pt) return;
+        if (sketchPoints.length >= 3 && pt.distanceTo(sketchPoints[0]) < 1e-6) { finishSketch(); return; }
+        if (sketchPoints.length === 0 || pt.distanceTo(sketchPoints[sketchPoints.length - 1]) > 1e-6) sketchPoints.push(pt);
+        updateSketchLine();
+        updateStatus(`Sketch: ${sketchPoints.length} corner(s). Click the first point or press Enter to finish.`);
+        return;
+    }
 
     if (isWiringMode) {
         // intersect against shapes or a plane. Non-recursive: a group's hidden CSG source
@@ -2098,6 +2772,10 @@ function onPointerDown(event) {
 }
 
 function onPointerMove(event) {
+    if (isSketchMode && sketchPoints.length > 0) {
+        const pt = groundPoint(event);
+        if (pt) updateSketchLine(pt);
+    }
     if (isWiringMode && wirePreviewSphere) {
         mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
         raycaster.setFromCamera(mouse, activeCamera);
@@ -2133,6 +2811,7 @@ function onPointerUp(event) {
     }
     
     if (new THREE.Vector2(event.clientX, event.clientY).distanceTo(pointerDownPos) < 5) {
+        if (isMeasureMode && !event.target.closest?.('.toolbar, .glass-panel, #theme-toggles, #viewcube-wrapper')) { measureClick(event); return; }
         if (isAlignMode || isDistributeMode) {
             mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
             raycaster.setFromCamera(mouse, activeCamera);
@@ -2243,78 +2922,170 @@ function performAlign(axis, valType, targetVal) {
 
 
 
-function evaluateGroup(children) {
-    let solids = children.filter(s => !s.userData.isHole);
-    let holes = children.filter(s => s.userData.isHole);
-    
-    if (solids.length === 0) throw new Error("Cannot group only holes. Please include at least one solid.");
-    
+// --- Group booleans ---
+// Groups with more triangles than this are computed in a Web Worker so the page stays
+// responsive; smaller ones run inline, which keeps them instantaneous and synchronous.
+const CSG_WORKER_TRIANGLES = 20000;
+const csgWorkerThreshold = () => (typeof window.HOLODECK_CSG_WORKER_THRESHOLD === 'number' ? window.HOLODECK_CSG_WORKER_THRESHOLD : CSG_WORKER_TRIANGLES);
+
+const triangleCount = geometry => (geometry.index ? geometry.index.count : geometry.attributes.position.count) / 3;
+const groupTriangles = children => children.reduce((n, c) => n + (c.geometry ? triangleCount(c.geometry) : 0), 0);
+
+function partsOf(children) {
     children.forEach(c => c.updateMatrixWorld(true));
-    
-    let baseSolid = solids[0];
-    for (let i = 1; i < solids.length; i++) {
-        const temp = CSG.union(baseSolid, solids[i]);
-        if (temp) {
-            temp.geometry.applyMatrix4(temp.matrix);
-            temp.position.set(0,0,0); temp.rotation.set(0,0,0); temp.scale.set(1,1,1); temp.updateMatrixWorld(true);
-            baseSolid = temp;
-        }
-    }
-    
-    let result = baseSolid;
-    for (let i = 0; i < holes.length; i++) {
-        const temp = CSG.subtract(result, holes[i]);
-        if (temp) {
-            temp.geometry.applyMatrix4(temp.matrix);
-            temp.position.set(0,0,0); temp.rotation.set(0,0,0); temp.scale.set(1,1,1); temp.updateMatrixWorld(true);
-            result = temp;
-        }
-    }
-    
-    const resultGeometry = result.geometry;
-    resultGeometry.computeBoundingBox();
-    const center = new THREE.Vector3(); resultGeometry.boundingBox.getCenter(center);
-    resultGeometry.translate(-center.x, -center.y, -center.z);
-    
-    const newMat = Array.isArray(solids[0].material) ? solids[0].material.map(m => m.clone()) : solids[0].material.clone();
-    const finalMesh = new THREE.Mesh(resultGeometry, newMat);
-    finalMesh.position.copy(center); finalMesh.updateMatrixWorld(true);
-    
-    return finalMesh;
+    return children.map(c => ({ geometry: c.geometry, matrix: c.matrix.toArray(), isHole: !!c.userData.isHole }));
+}
+
+// Wraps a boolean result into the mesh a group is displayed as.
+function finishGroupMesh(children, { geometry, center }) {
+    const first = children.find(s => !s.userData.isHole);
+    const material = Array.isArray(first.material) ? first.material.map(m => m.clone()) : first.material.clone();
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.copy(center); mesh.updateMatrixWorld(true);
+    return mesh;
+}
+
+function evaluateGroup(children) {
+    return finishGroupMesh(children, evaluateParts(THREE, CSG, partsOf(children)));
+}
+
+let csgWorker = null;
+let csgJobs = new Map();
+let csgJobId = 0;
+
+function getCsgWorker() {
+    if (csgWorker) return csgWorker;
+    try {
+        csgWorker = new Worker(new URL('./csg-worker.js', import.meta.url), { type: 'module' });
+    } catch (e) { csgWorker = null; return null; }
+    csgWorker.onmessage = ({ data }) => {
+        const job = csgJobs.get(data.id);
+        if (!job) return;
+        csgJobs.delete(data.id);
+        if (data.error) { job.reject(new Error(data.error)); return; }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
+        if (data.normals) geometry.setAttribute('normal', new THREE.BufferAttribute(data.normals, 3));
+        job.resolve({ geometry, center: new THREE.Vector3().fromArray(data.center) });
+    };
+    csgWorker.onerror = () => {
+        const failed = csgJobs; csgJobs = new Map(); csgWorker = null;
+        failed.forEach(job => job.reject(new Error('The background worker failed to run.')));
+    };
+    return csgWorker;
+}
+
+function setBusy(on) { document.body.classList.toggle('busy', on); }
+
+// Same result as evaluateGroup, computed off the main thread. Falls back to inline if the
+// worker cannot be started (an old browser, or a file:// page).
+async function evaluateGroupAsync(children) {
+    const worker = getCsgWorker();
+    if (!worker) return evaluateGroup(children);
+    const parts = partsOf(children).map(p => {
+        const g = p.geometry.index ? p.geometry.toNonIndexed() : p.geometry;
+        return { positions: Float32Array.from(g.attributes.position.array), normals: Float32Array.from(g.attributes.normal.array), matrix: p.matrix, isHole: p.isHole };
+    });
+    const id = ++csgJobId;
+    setBusy(true);
+    try {
+        const result = await new Promise((resolve, reject) => {
+            csgJobs.set(id, { resolve, reject });
+            worker.postMessage({ id, parts }, parts.flatMap(p => [p.positions.buffer, p.normals.buffer]));
+        });
+        return finishGroupMesh(children, result);
+    } finally { setBusy(csgJobs.size > 0); }
+}
+
+const useWorkerFor = children => groupTriangles(children) > csgWorkerThreshold();
+
+function applyRebuiltGeometry(mesh, newMesh) {
+    // three-csg-ts evaluates from each mesh's *local* matrix, and rebuildCSG always
+    // runs with the children already parented to `mesh`, so the result is already in
+    // mesh-local space — re-basing it against matrixWorld would shift the group by
+    // -position on every rebuild. Only the core's re-centring has to be undone.
+    newMesh.updateMatrix();
+    newMesh.geometry.applyMatrix4(newMesh.matrix);
+    if (mesh.geometry) mesh.geometry.dispose();
+    mesh.geometry = newMesh.geometry;
+    mesh.userData.baseSize = measureBaseSize(mesh.geometry);
+    delete mesh.userData.csgError;
+}
+
+function reportCsgFailure(mesh, e) {
+    console.error('CSG rebuild failed:', e);
+    mesh.userData.csgError = e.message;
+    updateStatus(`⚠ "${mesh.name}" could not be recomputed (${e.message}) — its previous shape was kept.`);
 }
 
 function rebuildCSG(mesh) {
     if (!mesh.userData.isComposite || !mesh.userData.groupChildren) return;
-    
+
     mesh.userData.groupChildren.forEach(child => {
         if (child.userData.isComposite) rebuildCSG(child);
     });
-    
+
     try {
         const newMesh = evaluateGroup(mesh.userData.groupChildren);
-        if (newMesh) {
-            // three-csg-ts evaluates from each mesh's *local* matrix, and rebuildCSG always
-            // runs with the children already parented to `mesh`, so the result is already in
-            // mesh-local space — re-basing it against matrixWorld would shift the group by
-            // -position on every rebuild. Only evaluateGroup's re-centring has to be undone.
-            newMesh.updateMatrix();
-            newMesh.geometry.applyMatrix4(newMesh.matrix);
-
-            if (mesh.geometry) mesh.geometry.dispose();
-            mesh.geometry = newMesh.geometry;
-            mesh.userData.baseSize = measureBaseSize(mesh.geometry);
-        }
-    } catch (e) { console.error('CSG rebuild failed:', e); }
+        if (newMesh) applyRebuiltGeometry(mesh, newMesh);
+    } catch (e) { reportCsgFailure(mesh, e); }
 }
 
-function groupShapes() {
+async function rebuildCSGAsync(mesh) {
+    if (!mesh.userData.isComposite || !mesh.userData.groupChildren) return;
+    const version = (mesh.userData.csgVersion = (mesh.userData.csgVersion || 0) + 1);
+    for (const child of mesh.userData.groupChildren) if (child.userData.isComposite) await rebuildCSGAsync(child);
+    try {
+        const newMesh = await evaluateGroupAsync(mesh.userData.groupChildren);
+        if (mesh.userData.csgVersion !== version) { newMesh.geometry.dispose(); return; } // a newer edit superseded this one
+        applyRebuiltGeometry(mesh, newMesh);
+    } catch (e) { reportCsgFailure(mesh, e); }
+}
+
+// Re-cuts every group above `node` after it changed. Small models finish before this returns;
+// a large one continues in the background (and resolves when done).
+function rebuildAncestors(node) {
+    const chain = [];
+    for (let g = node.parent; g && g.type !== 'Scene'; g = g.parent) if (g.userData.isComposite) chain.push(g);
+    if (chain.length === 0) return Promise.resolve();
+    const outermost = chain[chain.length - 1];
+    if (!useWorkerFor(outermost.userData.groupChildren)) { chain.forEach(rebuildCSG); return Promise.resolve(); }
+    updateStatus('Recomputing group in the background…');
+    return (async () => {
+        for (const g of chain) await rebuildCSGAsync(g);
+        updateDimensions();
+        if (!/could not be recomputed/.test(document.getElementById('status-bar').innerText)) updateStatus('Group recomputed.');
+    })();
+}
+
+// Notes about imported parts that are unlikely to survive a boolean cleanly.
+function groupHealthWarning(shapesToGroup) {
+    const bad = [];
+    const check = m => {
+        if (m.userData.type === 'imported' && importedMeshes.has(m.userData.importId)) {
+            const h = analyzeMesh(importedMeshes.get(m.userData.importId));
+            if (!h.watertight || h.inconsistentEdges) bad.push(m.name);
+        }
+        if (m.userData.isComposite && m.userData.groupChildren) m.userData.groupChildren.forEach(check);
+    };
+    shapesToGroup.forEach(check);
+    return bad.length ? ` ⚠ ${bad.join(', ')} ${bad.length > 1 ? 'are' : 'is'} not a clean closed mesh, so the result may have gaps.` : '';
+}
+
+async function groupShapes() {
     if (selectedShapes.length < 2) { updateStatus('Select at least 2 shapes to group'); return; }
     transformControl.detach();
-    
+
     try {
         const shapesToGroup = [...selectedShapes];
-        const resultMesh = evaluateGroup(shapesToGroup);
-        
+        let resultMesh;
+        if (useWorkerFor(shapesToGroup)) {
+            updateStatus(`Grouping ${groupTriangles(shapesToGroup).toLocaleString()} triangles in the background…`);
+            resultMesh = await evaluateGroupAsync(shapesToGroup);
+        } else {
+            resultMesh = evaluateGroup(shapesToGroup);
+        }
+
         if (resultMesh) {
             resultMesh.userData = {
                 type: 'group', isComposite: true, isHole: false, isHardware: false,
@@ -2323,7 +3094,7 @@ function groupShapes() {
             };
             resultMesh.uuid = THREE.MathUtils.generateUUID();
             resultMesh.name = "Group " + (shapes.length + 1);
-            
+
             shapesToGroup.forEach(s => {
                 const invMatrix = new THREE.Matrix4().copy(resultMesh.matrixWorld).invert();
                 s.applyMatrix4(invMatrix);
@@ -2332,16 +3103,18 @@ function groupShapes() {
                 scene.remove(s);
                 shapes = shapes.filter(x => x !== s);
             });
-            
+
             scene.add(resultMesh);
             shapes.push(resultMesh);
             selectShape(resultMesh);
-            updateStatus('Grouped shapes');
+            updateStatus('Grouped shapes' + groupHealthWarning(shapesToGroup));
             historyManager.saveState();
         }
     } catch (e) {
         updateStatus(`Grouping failed: ${e.message}`);
         console.error(e);
+        // The parts were detached from the gizmo but left untouched; put it back.
+        if (selectedShape && !isAlignMode) transformControl.attach(selectedShape);
     }
 }
 
@@ -2412,35 +3185,34 @@ function performDistribute(axis, valType) {
 // model comes out 10x the wrong size the moment it leaves Holodeck.
 const STL_EXPORT_SCALE = 10; // cm -> mm
 
-function exportSTL() {
-    // STLExporter traverses every Mesh it is handed and ignores .visible, so exporting the
-    // live scene ships the transform gizmo, the alignment handles, the wire preview and the
-    // hidden children CSG already consumed. Build a scene holding only the real solids.
-    const exportScene = new THREE.Scene();
-    exportScene.scale.setScalar(STL_EXPORT_SCALE);
-    let exported = 0;
+async function exportModel() {
+    // Only real solids are exported: holes are modelling aids, and a group's source parts
+    // are already inside its CSG result. `shapes` holds exactly the top-level meshes.
+    const solids = shapes.filter(shape => shape.isMesh && shape.geometry && !shape.userData.isHole);
+    if (solids.length === 0) { updateStatus('Nothing to export.'); return; }
 
-    shapes.forEach(shape => {
-        if (!shape.isMesh || !shape.geometry) return;
-        if (shape.userData.isHole) return; // a hole is a modelling aid, not a printable solid
-        shape.updateMatrixWorld(true);
-        const flat = new THREE.Mesh(shape.geometry, shape.material);
-        flat.applyMatrix4(shape.matrixWorld);
-        exportScene.add(flat);
-        exported++;
-    });
-
-    if (exported === 0) {
-        updateStatus('Nothing to export.');
-        return;
+    const prefs = loadPrefs('export', { format: 'stl-binary', selectionOnly: false });
+    const selectedSolids = solids.filter(s => selectedShapes.includes(s));
+    const fields = [{ id: 'format', label: 'Format', type: 'select', value: EXPORT_FORMATS[prefs.format] ? prefs.format : 'stl-binary',
+        options: Object.entries(EXPORT_FORMATS).map(([id, f]) => [id, f.label]) }];
+    if (selectedSolids.length > 0) {
+        fields.push({ id: 'selectionOnly', label: `Export only the ${selectedSolids.length} selected shape(s)`, type: 'checkbox', value: prefs.selectionOnly });
     }
+    const v = await showFormDialog({ title: 'Export', confirmLabel: 'Export', message: 'Sizes are written in millimetres.', fields });
+    if (!v) { updateStatus('Export cancelled.'); return; }
+    savePrefs('export', { format: v.format, selectionOnly: !!v.selectionOnly });
 
-    exportScene.updateMatrixWorld(true);
-    const exporter = new THREE.STLExporter();
-    const blob = new Blob([exporter.parse(exportScene, { binary: false })], { type: 'text/plain' });
+    const chosen = v.selectionOnly ? selectedSolids : solids;
+    const parts = chosen.map(shape => {
+        const positions = worldPositionsOf(shape);
+        for (let i = 0; i < positions.length; i++) positions[i] *= STL_EXPORT_SCALE;
+        return { name: shape.name || 'Part', positions };
+    });
+    const format = EXPORT_FORMATS[v.format];
+    const blob = new Blob([format.write(parts)], { type: format.mime });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'model.stl'; a.click(); URL.revokeObjectURL(url);
-    updateStatus(`Exported ${exported} object(s) to STL.`);
+    const a = document.createElement('a'); a.href = url; a.download = `model.${format.ext}`; a.click(); URL.revokeObjectURL(url);
+    updateStatus(`Exported ${parts.length} object(s), ${countTriangles(parts).toLocaleString()} triangles, as ${format.ext.toUpperCase()}.`);
 }
 
 // Frees the GPU resources behind a mesh and everything under it. Nothing else may still be
@@ -2604,6 +3376,7 @@ class HistoryManager {
         if (this.undoStack.length > MAX_HISTORY_STATES) this.undoStack.shift();
         this.redoStack = [];
         updateToolbarButtons();
+        markDirty();
     }
 
     undo() {
@@ -2613,6 +3386,7 @@ class HistoryManager {
         const prevState = this.undoStack[this.undoStack.length - 1];
         this.restoreState(prevState);
         updateToolbarButtons();
+        markDirty();
     }
 
     redo() {
@@ -2621,6 +3395,7 @@ class HistoryManager {
         this.undoStack.push(nextState);
         this.restoreState(nextState);
         updateToolbarButtons();
+        markDirty();
     }
 
     restoreState(state) {
@@ -2656,6 +3431,9 @@ function serializeShape(mesh) {
         },
         userData: {
             type: mesh.userData.type,
+            importId: mesh.userData.importId || null,
+            importFormat: mesh.userData.importFormat || null,
+            edge: mesh.userData.edge ? { ...mesh.userData.edge } : null,
             bindings: mesh.userData.bindings ? { ...mesh.userData.bindings } : {},
             isComposite: !!mesh.userData.isComposite,
             isHole: !!mesh.userData.isHole,
@@ -2718,12 +3496,15 @@ function rebuildLeafGeometry(ud) {
         const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
         return new THREE.TubeGeometry(curve, Math.max(20, pts.length * 10), 0.15, 8, false);
     }
+    if (ud.type === 'imported' && importedMeshes.has(ud.importId)) {
+        return buildImportedGeometry(importedMeshes.get(ud.importId));
+    }
     if (ud.isHardware) {
         const geometry = generateHardwareGeometry(ud.type, ud.hwProps || {});
         if (geometry) return geometry;
     }
     switch (ud.type) {
-        case 'cube': return new THREE.BoxGeometry(2, 2, 2);
+        case 'cube': return ud.edge ? buildRoundedCubeGeometry(ud.edge) : new THREE.BoxGeometry(2, 2, 2);
         case 'sphere': return new THREE.SphereGeometry(1.5, 32, 32);
         case 'cylinder': return new THREE.CylinderGeometry(1, 1, 2, 32);
         case 'cone': return new THREE.ConeGeometry(1.5, 2, 32);
@@ -2958,11 +3739,7 @@ function updateSelectedHardwareProfile() {
     target.userData.baseSize = measureBaseSize(newGeom);
 
     // If this part lives inside a group, the group's solid has to be re-cut around it.
-    let parentGroup = target.parent;
-    while (parentGroup && parentGroup.type !== 'Scene') {
-        if (parentGroup.userData.isComposite) rebuildCSG(parentGroup);
-        parentGroup = parentGroup.parent;
-    }
+    rebuildAncestors(target);
 
     // Refresh properties panel to show new dimensions
     selectPropertyNode(target);

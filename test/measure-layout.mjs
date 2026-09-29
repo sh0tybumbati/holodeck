@@ -11,6 +11,7 @@
 //
 // Note: Chromium will not open a window narrower than ~500px, so that is the floor here.
 
+import { findBrowser, browserArgs } from './browser-utils.mjs';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
@@ -26,8 +27,6 @@ const TOUCH = mode === 'touch';
 const PANELS = ['top-left-toolbar', 'top-toolbar', 'left-sidebar', 'right-sidebar',
     'viewcube-wrapper', 'theme-toggles', 'variables-panel', 'status-bar'];
 
-const BROWSERS = ['/usr/bin/brave', '/usr/bin/brave-browser', '/usr/bin/chromium',
-    '/usr/bin/google-chrome-stable', '/usr/bin/google-chrome'];
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
 
 const measure = `<script>
@@ -85,16 +84,13 @@ const server = createServer(async (req, res) => {
 
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 
-const browser = BROWSERS.find(p => existsSync(p));
-if (!browser) { console.error('No Chromium-family browser found.'); process.exit(2); }
+const browser = findBrowser();
 
 // Its own profile: without this the browser attaches to an already-running instance, which
 // silently ignores --window-size and would put this measurement in the user's own browser.
 const profileDir = await mkdtemp(join(tmpdir(), 'holodeck-layout-'));
 
-const child = spawn(browser, ['--headless=new', '--disable-gpu', '--use-angle=swiftshader',
-    '--enable-unsafe-swiftshader', '--no-sandbox',
-    `--user-data-dir=${profileDir}`, `--window-size=${width},${height}`,
+const child = spawn(browser, [...browserArgs(profileDir), `--window-size=${width},${height}`,
     `http://127.0.0.1:${server.address().port}/index.html`], { stdio: 'ignore' });
 
 const raw = await Promise.race([layoutPromise, new Promise(r => setTimeout(() => r(null), 60000))]);

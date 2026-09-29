@@ -1,0 +1,17 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The browser suite drives the Chrome that GitHub's Ubuntu runners already ship
+      # (test/browser-utils.mjs finds /usr/bin/google-chrome); nothing is installed from npm.
+      - run: npm test
+      - run: npm run test:layout
