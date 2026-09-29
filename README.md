@@ -11,7 +11,7 @@ Holodeck is a web-based, 3D CAD modeling and design tool built with Three.js. It
 - **Variables & Math**: Define numeric variables and formulas in the properties panel to drive your design programmatically.
 - **Themes**: Switch between Light/Dark mode and four distinct color themes: Blueprint, Holodeck, Amber CRT, and Matrix.
 - **Interactive ViewCube**: Quickly navigate and snap your camera to standard orthographic views.
-- **Export**: Export your creations to STL format for 3D printing.
+- **Export**: STL (binary or ASCII), OBJ and 3MF, all in millimetres; optionally just the selected shapes.
 - **Import**: Bring in **STL** (binary or ASCII), **OBJ** and **SVG** files with the import button or by dropping them on the page. STL/OBJ are read as millimetres (matching the STL export, so a file round-trips at its original size); an SVG is extruded 5 mm, 1 user unit = 1 CSS px, holes preserved. Imported meshes are ordinary shapes: move, scale, colour, group, mark as holes, and they are saved inside the `.holo` file. Limit: 1,000,000 triangles.
 - **Hotkeys**: Supports standard shortcuts (Ctrl+C, Ctrl+V, Ctrl+X, Delete) and object grouping (Ctrl+G / Ctrl+Shift+G).
 
@@ -33,6 +33,7 @@ bill of materials, GPU resource release, and variable-edit cost.
 ```
 node test/test-importers.mjs
 node test/test-modeling.mjs
+node test/test-exporters.mjs
 ```
 
 Unit tests for the STL/OBJ parsers; pure node, no browser. (SVG needs `THREE.SVGLoader`, so it is

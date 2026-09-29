@@ -1,6 +1,7 @@
 import { CSG } from 'https://cdn.jsdelivr.net/npm/three-csg-ts@3.1.11/+esm';
 import { importFile, importFormatOf, convertImported, UNIT_MM, ImportError, encodePositions, decodePositions } from './importers.js';
 import { showFormDialog, loadPrefs, savePrefs } from './ui.js';
+import { EXPORT_FORMATS, countTriangles } from './exporters.js';
 import { roundedBox, revolveProfile, mirrorPositions, flipWinding, signedVolume } from './modeling.js';
 
 // Basic Three.js setup
@@ -1150,7 +1151,7 @@ function setupToolbar() {
         });
     });
     
-    bindClick('export-stl', exportSTL); bindClick('delete-selected', deleteSelected); bindClick('toggle-grid', toggleGrid);
+    bindClick('export-stl', exportModel); bindClick('delete-selected', deleteSelected); bindClick('toggle-grid', toggleGrid);
     bindClick('unit-toggle', toggleUnit);
     bindClick('group-shapes', groupShapes);
     bindClick('ungroup-shapes', ungroupShapes);
@@ -2817,35 +2818,34 @@ function performDistribute(axis, valType) {
 // model comes out 10x the wrong size the moment it leaves Holodeck.
 const STL_EXPORT_SCALE = 10; // cm -> mm
 
-function exportSTL() {
-    // STLExporter traverses every Mesh it is handed and ignores .visible, so exporting the
-    // live scene ships the transform gizmo, the alignment handles, the wire preview and the
-    // hidden children CSG already consumed. Build a scene holding only the real solids.
-    const exportScene = new THREE.Scene();
-    exportScene.scale.setScalar(STL_EXPORT_SCALE);
-    let exported = 0;
+async function exportModel() {
+    // Only real solids are exported: holes are modelling aids, and a group's source parts
+    // are already inside its CSG result. `shapes` holds exactly the top-level meshes.
+    const solids = shapes.filter(shape => shape.isMesh && shape.geometry && !shape.userData.isHole);
+    if (solids.length === 0) { updateStatus('Nothing to export.'); return; }
 
-    shapes.forEach(shape => {
-        if (!shape.isMesh || !shape.geometry) return;
-        if (shape.userData.isHole) return; // a hole is a modelling aid, not a printable solid
-        shape.updateMatrixWorld(true);
-        const flat = new THREE.Mesh(shape.geometry, shape.material);
-        flat.applyMatrix4(shape.matrixWorld);
-        exportScene.add(flat);
-        exported++;
-    });
-
-    if (exported === 0) {
-        updateStatus('Nothing to export.');
-        return;
+    const prefs = loadPrefs('export', { format: 'stl-binary', selectionOnly: false });
+    const selectedSolids = solids.filter(s => selectedShapes.includes(s));
+    const fields = [{ id: 'format', label: 'Format', type: 'select', value: EXPORT_FORMATS[prefs.format] ? prefs.format : 'stl-binary',
+        options: Object.entries(EXPORT_FORMATS).map(([id, f]) => [id, f.label]) }];
+    if (selectedSolids.length > 0) {
+        fields.push({ id: 'selectionOnly', label: `Export only the ${selectedSolids.length} selected shape(s)`, type: 'checkbox', value: prefs.selectionOnly });
     }
+    const v = await showFormDialog({ title: 'Export', confirmLabel: 'Export', message: 'Sizes are written in millimetres.', fields });
+    if (!v) { updateStatus('Export cancelled.'); return; }
+    savePrefs('export', { format: v.format, selectionOnly: !!v.selectionOnly });
 
-    exportScene.updateMatrixWorld(true);
-    const exporter = new THREE.STLExporter();
-    const blob = new Blob([exporter.parse(exportScene, { binary: false })], { type: 'text/plain' });
+    const chosen = v.selectionOnly ? selectedSolids : solids;
+    const parts = chosen.map(shape => {
+        const positions = worldPositionsOf(shape);
+        for (let i = 0; i < positions.length; i++) positions[i] *= STL_EXPORT_SCALE;
+        return { name: shape.name || 'Part', positions };
+    });
+    const format = EXPORT_FORMATS[v.format];
+    const blob = new Blob([format.write(parts)], { type: format.mime });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'model.stl'; a.click(); URL.revokeObjectURL(url);
-    updateStatus(`Exported ${exported} object(s) to STL.`);
+    const a = document.createElement('a'); a.href = url; a.download = `model.${format.ext}`; a.click(); URL.revokeObjectURL(url);
+    updateStatus(`Exported ${parts.length} object(s), ${countTriangles(parts).toLocaleString()} triangles, as ${format.ext.toUpperCase()}.`);
 }
 
 // Frees the GPU resources behind a mesh and everything under it. Nothing else may still be

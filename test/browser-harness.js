@@ -48,10 +48,27 @@ async function lastBlobText() {
     return await blobs[blobs.length - 1].text();
 }
 
+// Waits for a form dialog, sets fields by id, then confirms (or cancels) it.
+async function driveDialog(options = {}, { cancel = false } = {}) {
+    for (let i = 0; i < 40 && !byId('dlg-ok'); i++) await new Promise(r => setTimeout(r, 50));
+    if (!byId('dlg-ok')) return false;
+    for (const [id, value] of Object.entries(options)) {
+        const el = byId('dlg-' + id);
+        if (!el) continue; // e.g. the selection-only box only exists when something is selected
+        if (el.type === 'checkbox') el.checked = value; else el.value = value;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    byId(cancel ? 'dlg-cancel' : 'dlg-ok').click();
+    await new Promise(r => setTimeout(r, 60));
+    return true;
+}
+
 // Exports the scene and summarises the STL. Returns null when the export was refused.
 async function exportSignature() {
     const before = blobs.length;
     byId('export-stl').click();
+    // Empty scenes are refused before any dialog opens.
+    if (!(await driveDialog({ format: 'stl-ascii', selectionOnly: false })) && blobs.length === before) return null;
     if (blobs.length === before) return null;
 
     const text = await lastBlobText();
@@ -447,19 +464,6 @@ async function run() {
     // 13. Importing. A model goes in through the real file input, so this covers the parser,
     //     the unit conversion, and the save/undo round trip of geometry that no primitive
     //     type can regenerate.
-    // Waits for a form dialog, sets fields by id, then confirms (or cancels) it.
-    async function driveDialog(options = {}, { cancel = false } = {}) {
-        for (let i = 0; i < 40 && !byId('dlg-ok'); i++) await new Promise(r => setTimeout(r, 50));
-        if (!byId('dlg-ok')) return false;
-        for (const [id, value] of Object.entries(options)) {
-            const el = byId('dlg-' + id);
-            if (el.type === 'checkbox') el.checked = value; else el.value = value;
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-        byId(cancel ? 'dlg-cancel' : 'dlg-ok').click();
-        await new Promise(r => setTimeout(r, 60));
-        return true;
-    }
     async function importViaInput(name, content, options = {}, { cancel = false } = {}) {
         options = { units: 'mm', up: 'y', recenter: true, ...options }; // the dialog remembers its last answers
         const input = byId('file-import');
@@ -643,6 +647,47 @@ async function run() {
     check('sketch-escape-cancels', /Sketch cancelled/.test(status()) && !byId('sketch-tool').classList.contains('active'), status());
 
     check('no-uncaught-errors-after-modelling', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 15. Export formats (each goes through the real dialog).
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    document.querySelector('[data-shape="sphere"]').click();
+    async function exportAs(format, opts = {}) {
+        const before = blobs.length;
+        byId('export-stl').click();
+        await driveDialog({ format, ...opts });
+        return blobs.length > before ? blobs[blobs.length - 1] : null;
+    }
+    const binBlob = await exportAs('stl-binary');
+    const binBuf = binBlob && await binBlob.arrayBuffer();
+    const binCount = binBuf && new DataView(binBuf).getUint32(80, true);
+    check('export-binary-stl-is-well-formed', binBuf && binBuf.byteLength === 84 + 50 * binCount && binCount > 12,
+        `bytes=${binBuf && binBuf.byteLength} triangles=${binCount}`);
+
+    const objBlob = await exportAs('obj');
+    const objText = objBlob && await objBlob.text();
+    check('export-obj-has-both-objects', objText && (objText.match(/^o /gm) || []).length === 2 && /^f \d+ \d+ \d+$/m.test(objText),
+        objText && objText.slice(0, 60));
+
+    const mfBlob = await exportAs('3mf');
+    const mfBytes = mfBlob && new Uint8Array(await mfBlob.arrayBuffer());
+    check('export-3mf-is-a-zip-with-a-model', mfBytes && mfBytes[0] === 0x50 && mfBytes[1] === 0x4b
+        && new TextDecoder().decode(mfBytes).includes('3D/3dmodel.model') && new TextDecoder().decode(mfBytes).includes('unit="millimeter"'),
+        `bytes=${mfBytes && mfBytes.length}`);
+
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    document.querySelector('[data-shape="sphere"]').click(); // sphere is selected
+    const onlySelected = await exportAs('stl-ascii', { selectionOnly: true });
+    const onlyText = onlySelected && await onlySelected.text();
+    const onlyFacets = onlyText && (onlyText.match(/facet normal/g) || []).length;
+    check('export-selection-only', onlyFacets > 12 && (onlyText.match(/^solid /gm) || []).length === 1, `facets=${onlyFacets}`);
+
+    byId('export-stl').click();
+    await driveDialog({}, { cancel: true });
+    check('export-cancel-writes-nothing', /cancelled/.test(status()), status());
+
+    check('no-uncaught-errors-after-export', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }
