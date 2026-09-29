@@ -1,4 +1,4 @@
-import { CSG } from 'https://cdn.jsdelivr.net/npm/three-csg-ts@3.1.11/+esm';
+import { CSG } from '../vendor/three-csg-ts/csg.js';
 import { importFile, importFormatOf, convertImported, UNIT_MM, ImportError, encodePositions, decodePositions } from './importers.js';
 import { showFormDialog, loadPrefs, savePrefs, describeTransform, describeMeasurement } from './ui.js';
 import { EXPORT_FORMATS, countTriangles } from './exporters.js';
