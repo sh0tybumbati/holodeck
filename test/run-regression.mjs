@@ -14,7 +14,7 @@
 import { createServer } from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,9 +23,13 @@ const ROOT = normalize(join(fileURLToPath(import.meta.url), '..', '..'));
 const RUN_TIMEOUT_MS = 180000;
 
 const BROWSERS = [
+    process.env.HOLODECK_BROWSER,
     '/usr/bin/brave', '/usr/bin/brave-browser', '/usr/bin/chromium',
-    '/usr/bin/google-chrome-stable', '/usr/bin/google-chrome'
-];
+    '/usr/bin/google-chrome-stable', '/usr/bin/google-chrome',
+    ...(process.env.PLAYWRIGHT_BROWSERS_PATH ? readdirSync(process.env.PLAYWRIGHT_BROWSERS_PATH)
+        .filter(d => d.startsWith('chromium-'))
+        .map(d => join(process.env.PLAYWRIGHT_BROWSERS_PATH, d, 'chrome-linux', 'chrome')) : [])
+].filter(Boolean);
 
 const MIME = {
     '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
@@ -114,6 +118,9 @@ const browser = spawn(findBrowser(), [
     '--headless=new', '--disable-gpu', '--use-angle=swiftshader',
     '--enable-unsafe-swiftshader', '--no-sandbox',
     `--user-data-dir=${profileDir}`,
+    // Sandboxed machines reach the CDN only through a proxy, which Chromium does not read
+    // from the environment on its own.
+    ...(process.env.HTTPS_PROXY ? [`--proxy-server=${process.env.HTTPS_PROXY}`, '--proxy-bypass-list=127.0.0.1;localhost'] : []),
     `http://127.0.0.1:${port}/index.html`
 ], { stdio: 'ignore' });
 

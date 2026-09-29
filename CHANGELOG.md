@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Import STL / OBJ / SVG**: New import button (and drag-and-drop anywhere on the page). STL is read in binary or ASCII form — detected by file size, not by the `solid` header binary files also use; OBJ handles quads/n-gons, negative indices and `v/vt/vn` faces; SVG paths are extruded 5 mm with holes kept. Meshes are converted from mm to the scene's cm, centred and stood on the grid. Imported vertices are stored once, outside the undo history, and embedded in the `.holo` file as `assets` (format 2.2; older files still load). Files over 1,000,000 triangles are refused with a message. Dropping a `.holo` file now opens it.
 - **Themes**: Introduced two new aesthetic themes: `Amber CRT` (classic amber terminal look) and `Matrix` (green-on-black). These join the existing `Blueprint` and `Holodeck` themes.
 - **Math & Equations in Properties**: The properties panel now fully evaluates mathematical expressions (powered by `math.js`).
 - **Variable Referencing**: Variables in the properties panel can now reference other variables (e.g., `width / 2 + 5`), with automatic multi-pass resolution for nested references.

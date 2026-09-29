@@ -1,4 +1,5 @@
 import { CSG } from 'https://cdn.jsdelivr.net/npm/three-csg-ts@3.1.11/+esm';
+import { importFile, ImportError, encodePositions, decodePositions } from './importers.js';
 
 // Basic Three.js setup
 let scene, camera, renderer, controls, transformControl, selectionBox;
@@ -1154,8 +1155,9 @@ function setupToolbar() {
     bindClick('btn-redo', () => historyManager.redo());
     bindClick('btn-save', () => {
         const data = JSON.stringify({
-            version: "2.1",
+            version: "2.2",
             thumbnail: captureThumbnail(),
+            assets: serializeImportedMeshes(),
             undoStack: historyManager.undoStack,
             redoStack: historyManager.redoStack
         });
@@ -1168,26 +1170,32 @@ function setupToolbar() {
         bindClick('btn-load', () => fileLoad.click());
         fileLoad.addEventListener('change', (e) => {
             const file = e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = (evt) => {
-                try {
-                    const data = JSON.parse(evt.target.result);
-                    if (data.version && data.undoStack) {
-                        historyManager.undoStack = data.undoStack;
-                        historyManager.redoStack = data.redoStack || [];
-                        if (historyManager.undoStack.length > 0) {
-                            historyManager.restoreState(historyManager.undoStack[historyManager.undoStack.length - 1]);
-                        }
-                        updateToolbarButtons();
-                        updateStatus('Project loaded successfully.');
-                    }
-                } catch (err) { updateStatus('Failed to load project.'); }
-            };
-            reader.readAsText(file);
             e.target.value = '';
+            if (file) openProjectFile(file);
         });
     }
+
+    // Import (STL / OBJ / SVG)
+    const fileImport = document.getElementById('file-import');
+    if (fileImport) {
+        bindClick('btn-import', () => fileImport.click());
+        fileImport.addEventListener('change', (e) => {
+            const files = Array.from(e.target.files);
+            e.target.value = '';
+            files.forEach(importModelFile);
+        });
+    }
+
+    // Drag and drop anywhere on the page: models are imported, projects are opened.
+    window.addEventListener('dragover', (e) => { if (e.dataTransfer?.types.includes('Files')) e.preventDefault(); });
+    window.addEventListener('drop', (e) => {
+        if (!e.dataTransfer?.files.length) return;
+        e.preventDefault();
+        Array.from(e.dataTransfer.files).forEach(file => {
+            if (/\.(holo|hldk)$/i.test(file.name)) openProjectFile(file);
+            else importModelFile(file);
+        });
+    });
 
     // Keyboard shortcuts & Clipboard
     let clipboard = [];
@@ -1368,6 +1376,96 @@ function setupToolbar() {
 
 // Unscaled size of a geometry, used as the divisor for the dimension inputs.
 // Never returns 0 on an axis: a flat geometry would make scale = dim / 0.
+// Imported meshes are kept out of the per-action history states: every saveState() would
+// otherwise copy a multi-megabyte vertex array. A shape stores only an importId, and the
+// vertices live here once, keyed by that id. They are embedded in the .holo file as `assets`.
+const importedMeshes = new Map(); // importId -> Float32Array of triangle-soup positions
+
+function serializeImportedMeshes() {
+    const assets = {};
+    importedMeshes.forEach((positions, id) => { assets[id] = encodePositions(positions); });
+    return assets;
+}
+
+function buildImportedGeometry(positions) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3));
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    return geometry;
+}
+
+function openProjectFile(file) {
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+        try {
+            const data = JSON.parse(evt.target.result);
+            if (!(data.version && data.undoStack)) throw new Error('not a Holodeck project');
+            Object.entries(data.assets || {}).forEach(([id, b64]) => importedMeshes.set(id, decodePositions(b64)));
+            historyManager.undoStack = data.undoStack;
+            historyManager.redoStack = data.redoStack || [];
+            if (historyManager.undoStack.length > 0) {
+                historyManager.restoreState(historyManager.undoStack[historyManager.undoStack.length - 1]);
+            }
+            updateToolbarButtons();
+            updateStatus('Project loaded successfully.');
+        } catch (err) { console.error(err); updateStatus('Failed to load project.'); }
+    };
+    reader.readAsText(file);
+}
+
+async function importModelFile(file) {
+    updateStatus(`Importing ${file.name}...`);
+    try {
+        const result = await importFile(file);
+        addImportedMesh(result, file.name.replace(/\.[^.]+$/, ''));
+    } catch (err) {
+        if (!(err instanceof ImportError)) console.error(err);
+        updateStatus(`Import failed: ${err instanceof ImportError ? err.message : 'could not read ' + file.name}`);
+    }
+}
+
+// Files are in millimetres (Holodeck's own STL export writes mm); the scene is in cm. The
+// mesh is re-centred on its bounding box so it lands at the origin and can be moved and
+// scaled about its middle like any other shape, then stood on the grid.
+function addImportedMesh({ positions, format, unitsMm }, name) {
+    const scaled = new Float32Array(positions.length);
+    const k = unitsMm / 10;
+    for (let i = 0; i < positions.length; i++) scaled[i] = positions[i] * k;
+    const geometry = buildImportedGeometry(scaled);
+    const center = new THREE.Vector3(); geometry.boundingBox.getCenter(center);
+    geometry.translate(-center.x, -center.y, -center.z);
+    const stored = Float32Array.from(geometry.attributes.position.array);
+    geometry.computeBoundingBox();
+    const size = new THREE.Vector3(); geometry.boundingBox.getSize(size);
+    if (!(size.x > 0 || size.y > 0 || size.z > 0) || [size.x, size.y, size.z].some(v => !isFinite(v))) {
+        geometry.dispose();
+        throw new ImportError('The file has no usable geometry.');
+    }
+
+    const importId = THREE.MathUtils.generateUUID();
+    importedMeshes.set(importId, stored);
+
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+        color: 0x9aa7b8, transparent: true, opacity: 0.85, roughness: 0.4, metalness: 0.1
+    }));
+    mesh.position.set(0, size.y / 2, 0);
+    mesh.userData = {
+        type: 'imported', importId, importFormat: format, originalGeometry: geometry,
+        bindings: {}, isComposite: false, isHole: false, baseSize: measureBaseSize(geometry)
+    };
+    mesh.uuid = THREE.MathUtils.generateUUID();
+    mesh.name = name || `Imported ${format}`;
+
+    scene.add(mesh);
+    shapes.push(mesh);
+    selectShape(mesh);
+    const tris = stored.length / 9;
+    updateStatus(`Imported ${mesh.name} (${format}, ${tris.toLocaleString()} triangles, ${(size.x * 10).toFixed(1)} × ${(size.y * 10).toFixed(1)} × ${(size.z * 10).toFixed(1)} mm)`);
+    historyManager.saveState();
+    centerSelection();
+}
+
 function measureBaseSize(geometry) {
     geometry.computeBoundingBox();
     const sz = new THREE.Vector3();
@@ -2656,6 +2754,8 @@ function serializeShape(mesh) {
         },
         userData: {
             type: mesh.userData.type,
+            importId: mesh.userData.importId || null,
+            importFormat: mesh.userData.importFormat || null,
             bindings: mesh.userData.bindings ? { ...mesh.userData.bindings } : {},
             isComposite: !!mesh.userData.isComposite,
             isHole: !!mesh.userData.isHole,
@@ -2717,6 +2817,9 @@ function rebuildLeafGeometry(ud) {
         const pts = ud.wirePoints.map(p => new THREE.Vector3().fromArray(p));
         const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
         return new THREE.TubeGeometry(curve, Math.max(20, pts.length * 10), 0.15, 8, false);
+    }
+    if (ud.type === 'imported' && importedMeshes.has(ud.importId)) {
+        return buildImportedGeometry(importedMeshes.get(ud.importId));
     }
     if (ud.isHardware) {
         const geometry = generateHardwareGeometry(ud.type, ud.hwProps || {});

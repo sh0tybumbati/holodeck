@@ -444,6 +444,74 @@ async function run() {
         solidAssembly && cutAssembly && solidAssembly.bounds !== cutAssembly.bounds,
         `solid "${fmt(solidAssembly)}" -> hole "${fmt(cutAssembly)}"`);
 
+    // 13. Importing. A model goes in through the real file input, so this covers the parser,
+    //     the unit conversion, and the save/undo round trip of geometry that no primitive
+    //     type can regenerate.
+    async function importViaInput(name, content) {
+        const input = byId('file-import');
+        const dt = new DataTransfer();
+        dt.items.add(new File([content], name));
+        input.files = dt.files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        for (let i = 0; i < 40 && !/Imported|Import failed/.test(status()); i++) await new Promise(r => setTimeout(r, 50));
+    }
+    const box = (x, y, z) => [
+        [0,0,0, x,0,0, x,y,0], [0,0,0, x,y,0, 0,y,0], [0,0,z, x,y,z, x,0,z], [0,0,z, 0,y,z, x,y,z],
+        [0,0,0, 0,y,z, 0,0,z], [0,0,0, 0,y,0, 0,y,z], [x,0,0, x,0,z, x,y,z], [x,0,0, x,y,z, x,y,0],
+        [0,0,0, x,0,z, x,0,0], [0,0,0, 0,0,z, x,0,z], [0,y,0, x,y,0, x,y,z], [0,y,0, x,y,z, 0,y,z]];
+    const asciiStl = tris => 'solid t\n' + tris.map(t => 'facet normal 0 0 0\nouter loop\n'
+        + [0, 3, 6].map(i => `vertex ${t[i] + 100} ${t[i + 1] + 100} ${t[i + 2] + 100}\n`).join('')
+        + 'endloop\nendfacet\n').join('') + 'endsolid t\n';
+
+    clearScene();
+    await importViaInput('block.stl', asciiStl(box(20, 10, 30))); // mm, far from the origin
+    const importedStl = await exportSignature();
+    check('import-stl-lands-at-size-in-mm-on-the-grid',
+        importedStl && importedStl.facets === 12 && importedStl.bounds === '[-10.000,0.000,-15.000]..[10.000,10.000,15.000]',
+        `${fmt(importedStl)} status="${status()}"`);
+
+    const savedImport = await saveAndParse();
+    check('import-is-embedded-once-in-the-save-file',
+        Object.keys(savedImport.assets || {}).length === 1
+            && !JSON.stringify(savedImport.undoStack).includes('positions'),
+        `assets=${Object.keys(savedImport.assets || {}).length}`);
+
+    document.querySelector('[data-shape="cube"]').click();
+    byId('btn-undo').click();
+    const afterImportUndo = await exportSignature();
+    check('import-survives-undo', sameMesh(afterImportUndo, importedStl), `${fmt(importedStl)} -> ${fmt(afterImportUndo)}`);
+
+    clearScene();
+    const loadInput = byId('file-load');
+    const dt = new DataTransfer();
+    dt.items.add(new File([JSON.stringify(savedImport)], 'project.holo'));
+    loadInput.files = dt.files;
+    loadInput.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 500));
+    check('import-survives-save-and-load', sameMesh(await exportSignature(), importedStl), `status="${status()}"`);
+
+    clearScene();
+    await importViaInput('quad.obj', 'v 0 0 0\nv 40 0 0\nv 40 0 40\nv 0 0 40\nv 20 30 20\nf 1 2 3 4\nf 1 2 5\nf 2 3 5\nf 3 4 5\nf 4 1 5\n');
+    const importedObj = await exportSignature();
+    check('import-obj-pyramid', importedObj && importedObj.facets === 6 && importedObj.bounds === '[-20.000,0.000,-20.000]..[20.000,30.000,20.000]',
+        fmt(importedObj));
+
+    clearScene();
+    await importViaInput('frame.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">'
+        + '<path fill-rule="evenodd" d="M0 0H100V100H0Z M25 25V75H75V25Z"/></svg>');
+    const importedSvg = await exportSignature();
+    // 100px = 26.458mm, extruded 5mm. A square with a square hole is 8 wall quads + top + bottom rings.
+    check('import-svg-extrudes-a-frame-with-its-hole',
+        importedSvg && importedSvg.bounds === '[-13.229,0.000,-13.229]..[13.229,5.000,13.229]' && importedSvg.facets > 12,
+        fmt(importedSvg));
+
+    clearScene();
+    await importViaInput('bad.stl', 'this is not an stl');
+    check('import-rejects-garbage-without-adding-a-shape', /Import failed/.test(status()) && (await exportSignature()) === null,
+        `status="${status()}"`);
+
+    check('no-uncaught-errors-after-import', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }
 
