@@ -619,9 +619,9 @@ async function run() {
         cam.matrixWorldInverse.copy(cam.matrixWorld).invert(); // the renderer only refreshes this at draw time
         const v = new THREE.Vector3(x, 0, z).project(cam);
         const canvas = document.querySelector('#canvas-container canvas');
-        canvas.dispatchEvent(new PointerEvent('pointerdown', {
-            clientX: (v.x + 1) / 2 * window.innerWidth, clientY: (1 - v.y) / 2 * window.innerHeight, bubbles: true }));
-        window.dispatchEvent(new PointerEvent('pointerup', { clientX: 0, clientY: 0, bubbles: true }));
+        const at = { clientX: (v.x + 1) / 2 * window.innerWidth, clientY: (1 - v.y) / 2 * window.innerHeight, bubbles: true };
+        canvas.dispatchEvent(new PointerEvent('pointerdown', at));
+        window.dispatchEvent(new PointerEvent('pointerup', at));
     };
     clearScene();
     await new Promise(r => setTimeout(r, 900)); // let any camera centring animation finish
@@ -688,6 +688,47 @@ async function run() {
     check('export-cancel-writes-nothing', /cancelled/.test(status()), status());
 
     check('no-uncaught-errors-after-export', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 16. Precision: numeric transforms, snap toggle, measuring.
+    clearScene();
+    await importViaInput('block.stl', asciiStl(box(20, 10, 30)));
+    const setField = (id, value) => { const el = byId(id); el.value = value; el.dispatchEvent(new Event('change', { bubbles: true })); };
+    check('position-fields-show-the-selection', byId('obj-py').value === '0.5', `py="${byId('obj-py').value}"`);
+    setField('obj-px', '5'); setField('obj-pz', '2*3');
+    const moved = await sigOf();
+    check('typing-a-position-moves-the-shape-and-accepts-expressions',
+        moved && moved.bounds === '[40.000,0.000,45.000]..[60.000,10.000,75.000]', fmt(moved));
+    setField('obj-px', '0'); setField('obj-pz', '0'); setField('obj-ry', '90');
+    const turned = await sigOf();
+    check('typing-a-rotation-turns-the-shape', turned && turned.bounds === '[-15.000,0.000,-10.000]..[15.000,10.000,10.000]', fmt(turned));
+    setField('obj-px', 'nonsense');
+    check('a-bad-position-is-refused-not-applied', /not a number/.test(status()) && (await sigOf()).bounds === turned.bounds, status());
+    byId('btn-undo').click();
+    check('numeric-edits-are-undoable', (await sigOf()).bounds !== turned.bounds, 'after undo');
+
+    byId('snap-toggle').click();
+    check('snap-toggle-turns-snapping-off', /Snapping off/.test(status()) && !byId('snap-toggle').classList.contains('active'), status());
+    byId('snap-toggle').click();
+    check('snap-toggle-turns-snapping-back-on', /Snapping on/.test(status()) && byId('snap-toggle').classList.contains('active'), status());
+
+    clearScene();
+    await new Promise(r => setTimeout(r, 900));
+    byId('measure-tool').click();
+    clickGround(0, 0); clickGround(3, 4);
+    await new Promise(r => setTimeout(r, 200)); // the label is attached to the DOM at the next draw
+    const label = document.querySelector('.measure-label');
+    check('measure-two-ground-points-is-50mm', label && /^50\.00 mm/.test(label.textContent) && /Δx 30\.00\s+Δy 0\.00\s+Δz 40\.00/.test(label.textContent),
+        label ? label.textContent : `no label; status="${status()}"`);
+    keys('Escape');
+    check('escape-finishes-measuring-and-clears-it', !document.querySelector('.measure-label') && !byId('measure-tool').classList.contains('active'), status());
+
+    document.querySelector('[data-shape="cube"]').click();
+    await new Promise(r => setTimeout(r, 900));
+    byId('measure-tool').click();
+    check('measure-mode-does-not-select-or-add-shapes', /Measure:/.test(status()), status());
+    keys('Escape');
+
+    check('no-uncaught-errors-after-precision', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }

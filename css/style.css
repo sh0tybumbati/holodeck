@@ -561,3 +561,20 @@ body.touch-mode .tool-select { min-height: 40px; }
 #drop-overlay.active { display: flex; }
 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.prop-row.triple { gap: 4px; }
+.prop-row.triple label { width: 38px; flex: none; }
+.prop-row.triple input[type="text"] { width: 0; flex: 1; min-width: 0; padding: 4px 2px; }
+
+#drag-hud {
+    position: fixed; z-index: 15000; display: none; pointer-events: none; white-space: nowrap;
+    padding: 4px 8px; border-radius: 6px; font: 12px/1.3 'Inter', sans-serif; color: var(--text-main);
+    background: var(--bg-panel); border: 1px solid var(--border-color); box-shadow: var(--shadow);
+}
+#drag-hud.active { display: block; }
+
+.measure-label {
+    padding: 2px 6px; border-radius: 4px; font: 600 12px 'Inter', sans-serif; white-space: nowrap;
+    color: #fff; background: rgba(0, 0, 0, 0.75); border: 1px solid var(--accent);
+}
+.measure-label small { display: block; font-weight: 400; opacity: 0.8; }

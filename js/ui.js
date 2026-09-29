@@ -108,3 +108,22 @@ export function loadPrefs(key, defaults) {
 export function savePrefs(key, values) {
     try { localStorage.setItem('holodeck.' + key, JSON.stringify(values)); } catch (e) { /* private mode */ }
 }
+
+// The readout shown beside the cursor while a transform gizmo is being dragged, so the exact
+// value being snapped to is visible. Positions and sizes arrive in cm and are shown in mm.
+export function describeTransform(mode, { position, rotationDeg, size }, snap) {
+    const mm = v => (Math.round(v * 100) / 10).toFixed(1).replace(/^-0\.0$/, '0.0');
+    const deg = v => (Math.round(v * 10) / 10).toFixed(1).replace(/^-0\.0$/, '0.0');
+    const snapText = snap.enabled ? `snap ${snap.label}` : 'snap off';
+    if (mode === 'rotate') return `X ${deg(rotationDeg[0])}°  Y ${deg(rotationDeg[1])}°  Z ${deg(rotationDeg[2])}°  · ${snap.enabled ? 'snap 5°' : 'snap off'}`;
+    if (mode === 'scale') return `${mm(size[0])} × ${mm(size[1])} × ${mm(size[2])} mm  · ${snapText}`;
+    return `X ${mm(position[0])}  Y ${mm(position[1])}  Z ${mm(position[2])} mm  · ${snapText}`;
+}
+
+// Straight-line distance between two points (cm in, mm out) with its axis components.
+export function describeMeasurement(a, b) {
+    const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]].map(v => v * 10);
+    const dist = Math.hypot(...d);
+    const f = v => Math.abs(v) < 0.005 ? '0.00' : v.toFixed(2);
+    return { distanceMm: dist, text: `${dist.toFixed(2)} mm`, detail: `Δx ${f(d[0])}  Δy ${f(d[1])}  Δz ${f(d[2])} mm` };
+}

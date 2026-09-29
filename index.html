@@ -45,6 +45,12 @@
             <button class="tool-btn icon-btn" id="unit-toggle" title="Toggle Units">
                 <i class="fas fa-ruler"></i>
             </button>
+            <button class="tool-btn active icon-btn" id="snap-toggle" title="Snapping on/off (hold Alt while dragging to bypass)">
+                <i class="fas fa-magnet"></i>
+            </button>
+            <button class="tool-btn icon-btn" id="measure-tool" title="Measure between two points (click surfaces; Esc to finish)">
+                <i class="fas fa-ruler-combined"></i>
+            </button>
         </div>
         <div style="margin-top: 8px; width: 100%;">
             <select id="snap-precision" class="tool-select" title="Snap Precision" style="width: 100%;">
@@ -271,6 +277,18 @@
                 <label>L (Z):</label>
                 <input type="text" id="obj-l" placeholder="Length">
             </div>
+            <div class="prop-row triple" title="Position in cm (within the group, for a part of a group). Accepts expressions and variables.">
+                <label>Pos:</label>
+                <input type="text" id="obj-px" aria-label="Position X" placeholder="X">
+                <input type="text" id="obj-py" aria-label="Position Y" placeholder="Y">
+                <input type="text" id="obj-pz" aria-label="Position Z" placeholder="Z">
+            </div>
+            <div class="prop-row triple" title="Rotation in degrees about X, Y and Z.">
+                <label>Rot°:</label>
+                <input type="text" id="obj-rx" aria-label="Rotation X" placeholder="X">
+                <input type="text" id="obj-ry" aria-label="Rotation Y" placeholder="Y">
+                <input type="text" id="obj-rz" aria-label="Rotation Z" placeholder="Z">
+            </div>
             <div class="prop-row" style="justify-content: flex-start; gap: 12px;">
                 <input type="color" id="obj-color" value="#ffffff" style="cursor: pointer;">
                 <label for="obj-color" style="cursor: pointer;">Color</label>
@@ -329,6 +347,8 @@
         <button id="add-var-btn" class="tool-btn" style="width:100%;"><i class="fas fa-plus"></i> New Variable</button>
     </div>
 
+    <div id="drag-hud" role="status" aria-live="off"></div>
+
     <div id="drop-overlay" aria-hidden="true"><span><i class="fas fa-file-import"></i> Drop STL, OBJ, SVG or a .holo project</span></div>
 
     <!-- Canvas -->
@@ -357,6 +377,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.140.0/examples/js/utils/BufferGeometryUtils.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.140.0/examples/js/loaders/SVGLoader.js"></script>
-    <script type="module" src="js/app.js?v=8"></script>
+    <script type="module" src="js/app.js?v=9"></script>
 </body>
 </html>

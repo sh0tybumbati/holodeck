@@ -6,7 +6,7 @@ Holodeck is a web-based, 3D CAD modeling and design tool built with Three.js. It
 
 - **3D Workspace**: Add cubes, spheres, cones, cylinders, and toruses.
 - **Modelling**: Duplicate (Ctrl+D), mirror, linear/polar arrays, fillet/chamfer on cubes, and a sketch tool that extrudes or revolves a drawn polygon.
-- **Transform Tools**: Translate, rotate, and scale your objects intuitively.
+- **Transform Tools**: Translate, rotate, and scale your objects intuitively, or type exact position and rotation values; a live readout shows the snapped value while dragging, and a measure tool reports distances between points.
 - **Advanced Alignment & Distribution**: Snap objects relative to each other's edges or centers using custom 3D gizmos.
 - **Variables & Math**: Define numeric variables and formulas in the properties panel to drive your design programmatically.
 - **Themes**: Switch between Light/Dark mode and four distinct color themes: Blueprint, Holodeck, Amber CRT, and Matrix.
@@ -34,6 +34,7 @@ bill of materials, GPU resource release, and variable-edit cost.
 node test/test-importers.mjs
 node test/test-modeling.mjs
 node test/test-exporters.mjs
+node test/test-ui.mjs
 ```
 
 Unit tests for the STL/OBJ parsers; pure node, no browser. (SVG needs `THREE.SVGLoader`, so it is

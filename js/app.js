@@ -1,6 +1,6 @@
 import { CSG } from 'https://cdn.jsdelivr.net/npm/three-csg-ts@3.1.11/+esm';
 import { importFile, importFormatOf, convertImported, UNIT_MM, ImportError, encodePositions, decodePositions } from './importers.js';
-import { showFormDialog, loadPrefs, savePrefs } from './ui.js';
+import { showFormDialog, loadPrefs, savePrefs, describeTransform, describeMeasurement } from './ui.js';
 import { EXPORT_FORMATS, countTriangles } from './exporters.js';
 import { roundedBox, revolveProfile, mirrorPositions, flipWinding, signedVolume } from './modeling.js';
 
@@ -75,6 +75,12 @@ let wirePreviewSphere = null;
 let isSketchMode = false;
 let sketchPoints = [];
 let sketchLine = null;
+
+// Measure tool state
+let isMeasureMode = false;
+let measurePending = null;   // first point of a measurement in progress
+let measureGroup = null;
+let measureMarkers = [];
 
 let cloneShape = null; // deepCloneShape, hoisted out of setupToolbar for the modelling tools
 
@@ -199,6 +205,7 @@ function init() {
     transformControl = new THREE.TransformControls(activeCamera, renderer.domElement);
     transformControl.addEventListener('dragging-changed', function (event) {
         controls.enabled = !event.value;
+        document.getElementById('drag-hud')?.classList.toggle('active', !!event.value);
         if (event.value && selectedShape) {
             dragStartScale.copy(selectedShape.scale);
         } else if (!event.value && selectedShape) {
@@ -211,6 +218,8 @@ function init() {
     });
     
     transformControl.addEventListener('change', function () {
+        if (transformControl.dragging) updateDragHud();
+        if (transformControl.dragging && currentPropertyNode === selectedShape) syncTransformInputs();
         if (transformControl.getMode() === 'scale' && selectedShapes.length === 1 && transformControl.dragging) {
             let base = selectedShape.userData.baseSize;
             if (!base) {
@@ -1158,6 +1167,8 @@ function setupToolbar() {
     bindClick('distribute-shapes', toggleDistributeMode);
     bindClick('align-mode', toggleAlignMode); bindClick('projection-toggle', toggleProjection);
     bindClick('center-selection', centerSelection);
+    bindClick('snap-toggle', () => setSnapEnabled(!snapEnabled)); bindClick('measure-tool', toggleMeasureMode);
+    setupTransformInputs();
     bindClick('duplicate-selected', duplicateSelection); bindClick('mirror-selected', mirrorSelection);
     bindClick('array-selected', arraySelection); bindClick('round-edges', roundEdges); bindClick('sketch-tool', toggleSketchMode);
     
@@ -1275,7 +1286,8 @@ function setupToolbar() {
         const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT';
         
         if (e.key === 'Escape') {
-            if (isSketchMode) cancelSketch();
+            if (isMeasureMode) toggleMeasureMode();
+            else if (isSketchMode) cancelSketch();
             else if (isWiringMode) cancelWire();
             else if (isAlignMode) toggleAlignMode();
             else if (isDistributeMode) toggleDistributeMode();
@@ -1391,6 +1403,7 @@ function setupToolbar() {
                 
                 if (transformControl.object) transformControl.updateMatrixWorld();
                 updateDimensions();
+                syncTransformInputs();
                 
                 historyManager.saveState();
             }
@@ -1683,6 +1696,165 @@ async function roundEdges() {
     updateDimensions();
     historyManager.saveState();
     updateStatus(v.style === 'none' ? 'Edges sharpened.' : `Applied ${v.style} of ${v.radius} mm.`);
+}
+
+// --- Precision: numeric transform fields, drag readout, snapping, measuring ---
+const TRANSFORM_INPUTS = ['obj-px', 'obj-py', 'obj-pz', 'obj-rx', 'obj-ry', 'obj-rz'];
+
+function syncTransformInputs() {
+    const node = currentPropertyNode;
+    if (!node) return;
+    const set = (id, v) => {
+        const el = document.getElementById(id);
+        if (el && document.activeElement !== el) el.value = String(+v.toFixed(3));
+    };
+    const e = new THREE.Euler().setFromQuaternion(node.quaternion, 'XYZ');
+    set('obj-px', node.position.x); set('obj-py', node.position.y); set('obj-pz', node.position.z);
+    set('obj-rx', THREE.MathUtils.radToDeg(e.x)); set('obj-ry', THREE.MathUtils.radToDeg(e.y)); set('obj-rz', THREE.MathUtils.radToDeg(e.z));
+}
+
+function setupTransformInputs() {
+    // Holding Alt bypasses snapping for the drag in progress.
+    window.addEventListener('keydown', e => {
+        if (e.key === 'Alt' && snapEnabled && !e.repeat) { transformControl.setTranslationSnap(null); transformControl.setRotationSnap(null); }
+    });
+    window.addEventListener('keyup', e => {
+        if (e.key === 'Alt' && snapEnabled) { updateTransformSnap(); transformControl.setRotationSnap(THREE.MathUtils.degToRad(5)); }
+    });
+
+    TRANSFORM_INPUTS.forEach(id => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
+        input.addEventListener('change', () => {
+            const node = currentPropertyNode;
+            if (!node) return;
+            // Numbers, or an expression using the project's variables (evaluated once, not bound).
+            const raw = input.value.trim();
+            const value = isNaN(Number(raw)) ? evaluateExpression(raw, getResolvedVariables()) : Number(raw);
+            if (value === null || !isFinite(value)) { syncTransformInputs(); updateStatus(`"${raw}" is not a number.`); return; }
+            const num = k => { const v = evaluateExpression(document.getElementById(k).value.trim(), getResolvedVariables()); return v === null || !isFinite(v) ? 0 : v; };
+            node.position.set(num('obj-px'), num('obj-py'), num('obj-pz'));
+            node.quaternion.setFromEuler(new THREE.Euler(
+                THREE.MathUtils.degToRad(num('obj-rx')), THREE.MathUtils.degToRad(num('obj-ry')), THREE.MathUtils.degToRad(num('obj-rz')), 'XYZ'));
+            node.updateMatrix(); node.updateMatrixWorld(true);
+            let parentGroup = node.parent;
+            while (parentGroup && parentGroup.type !== 'Scene') {
+                if (parentGroup.userData.isComposite) rebuildCSG(parentGroup);
+                parentGroup = parentGroup.parent;
+            }
+            if (transformControl.object) transformControl.updateMatrixWorld();
+            syncTransformInputs();
+            updateDimensions();
+            historyManager.saveState();
+        });
+    });
+}
+
+const snapLabel = () => {
+    if (unitMode === 'inch') return { 0.0625: '1/16 in', 0.125: '1/8 in', 0.25: '1/4 in', 0.5: '1/2 in', 1: '1 in', 2: '2 in' }[snapPrecision] || `${snapPrecision} in`;
+    return snapPrecision >= 10 ? `${snapPrecision / 10} cm` : `${snapPrecision} mm`;
+};
+
+function updateDragHud() {
+    const hud = document.getElementById('drag-hud');
+    const node = transformControl.object;
+    if (!hud || !node) return;
+    const e = new THREE.Euler().setFromQuaternion(node.quaternion, 'XYZ');
+    const base = node.userData.baseSize || { x: 1, y: 1, z: 1 };
+    hud.textContent = describeTransform(transformControl.getMode(), {
+        position: node.position.toArray(),
+        rotationDeg: [e.x, e.y, e.z].map(THREE.MathUtils.radToDeg),
+        size: [node.scale.x * base.x, node.scale.y * base.y, node.scale.z * base.z]
+    }, { enabled: snapEnabled, label: snapLabel() });
+}
+
+function setSnapEnabled(on) {
+    snapEnabled = on;
+    document.getElementById('snap-toggle')?.classList.toggle('active', on);
+    transformControl.setRotationSnap(on ? THREE.MathUtils.degToRad(5) : null);
+    updateTransformSnap();
+    updateStatus(on ? `Snapping on (${snapLabel()}).` : 'Snapping off.');
+}
+
+function clearMeasurements() {
+    if (measureGroup) {
+        scene.remove(measureGroup);
+        measureGroup.traverse(o => {
+            if (o.geometry) o.geometry.dispose();
+            if (o.material) o.material.dispose();
+            if (o.isCSS2DObject && o.element) o.element.remove();
+        });
+        measureGroup = null;
+    }
+    measurePending = null;
+}
+
+function toggleMeasureMode() {
+    isMeasureMode = !isMeasureMode;
+    document.getElementById('measure-tool')?.classList.toggle('active', isMeasureMode);
+    if (isMeasureMode) {
+        if (isWiringMode) cancelWire();
+        if (isSketchMode) cancelSketch(true);
+        updateStatus('Measure: click a point on a surface (it snaps to nearby corners), then a second point. Esc to finish.');
+    } else {
+        clearMeasurements();
+        updateStatus('Measure finished.');
+    }
+}
+
+// Where a click lands for measuring: the nearest corner of the face under the cursor when one
+// is close, else the surface point, else the ground. Distances need real corners to be useful.
+function measurePointAt(event) {
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, activeCamera);
+    const hit = raycaster.intersectObjects(shapes, false)[0];
+    if (hit) {
+        const tolerance = activeCamera.position.distanceTo(hit.point) * 0.03;
+        let best = null, bestD = tolerance;
+        const g = hit.object.geometry, pos = g.attributes.position;
+        [hit.face.a, hit.face.b, hit.face.c].forEach(i => {
+            const v = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(hit.object.matrixWorld);
+            const d = v.distanceTo(hit.point);
+            if (d < bestD) { bestD = d; best = v; }
+        });
+        return { point: best || hit.point.clone(), snapped: !!best };
+    }
+    const pt = groundPoint(event);
+    return pt ? { point: pt, snapped: true } : null;
+}
+
+function addMeasureMarker(point) {
+    if (!measureGroup) { measureGroup = new THREE.Group(); scene.add(measureGroup); }
+    const r = Math.max(0.05, activeCamera.position.distanceTo(point) * 0.012);
+    const m = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 12), new THREE.MeshBasicMaterial({ color: 0x00ffcc, depthTest: false }));
+    m.position.copy(point); m.renderOrder = 1000;
+    measureGroup.add(m);
+}
+
+function measureClick(event) {
+    const hit = measurePointAt(event);
+    if (!hit) return;
+    addMeasureMarker(hit.point);
+    if (!measurePending) {
+        measurePending = hit.point;
+        updateStatus('Measure: pick the second point.');
+        return;
+    }
+    const a = measurePending, b = hit.point;
+    measurePending = null;
+    const m = describeMeasurement(a.toArray(), b.toArray());
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]), new THREE.LineBasicMaterial({ color: 0x00ffcc, depthTest: false }));
+    line.renderOrder = 1000;
+    measureGroup.add(line);
+    const div = document.createElement('div');
+    div.className = 'measure-label';
+    div.textContent = m.text;
+    const small = document.createElement('small'); small.textContent = m.detail; div.appendChild(small);
+    const label = new THREE.CSS2DObject(div);
+    label.position.copy(a).lerp(b, 0.5);
+    measureGroup.add(label);
+    updateStatus(`Measured ${m.text} (${m.detail}). Click to measure again, Esc to finish.`);
 }
 
 // --- Sketch: draw a polygon on the ground, then extrude or revolve it ---
@@ -2391,6 +2563,7 @@ function selectPropertyNode(node) {
         input.value = (node.userData.bindings && node.userData.bindings[axis]) || (node.scale[axis] * base[axis]).toFixed(2);
     };
     setInput('obj-w', 'x'); setInput('obj-h', 'y'); setInput('obj-l', 'z');
+    syncTransformInputs();
     
     const container = document.getElementById('preview-container');
     if (container.clientWidth > 0 && container.clientHeight > 0 && previewRenderer) {
@@ -2447,7 +2620,7 @@ function onPointerDown(event) {
     
     pointerDownPos.set(event.clientX, event.clientY);
     
-    if (isAlignMode || isDistributeMode) return;
+    if (isAlignMode || isDistributeMode || isMeasureMode) return;
     
     mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(mouse, activeCamera);
@@ -2539,6 +2712,7 @@ function onPointerUp(event) {
     }
     
     if (new THREE.Vector2(event.clientX, event.clientY).distanceTo(pointerDownPos) < 5) {
+        if (isMeasureMode && !event.target.closest?.('.toolbar, .glass-panel, #theme-toggles, #viewcube-wrapper')) { measureClick(event); return; }
         if (isAlignMode || isDistributeMode) {
             mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
             raycaster.setFromCamera(mouse, activeCamera);
