@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="vendor/fonts/inter.css">
     <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
     <!-- Styles -->
-    <link rel="stylesheet" href="css/style.css?v=6">
+    <link rel="stylesheet" href="css/style.css?v=7">
 </head>
 <body data-color-theme="holodeck" data-brightness="dark">
     <!-- Local Project Dashboard Overlay -->
@@ -33,8 +33,11 @@
             <button id="projection-toggle" class="tool-btn icon-btn" title="Toggle Perspective / Orthographic">
                 <i class="fas fa-video"></i>
             </button>
-            <button id="center-selection" class="tool-btn icon-btn" title="Center Camera on Selection">
-                <i class="fas fa-crosshairs"></i>
+            <button id="fit-view" class="tool-btn icon-btn" title="Fit view to the selection, or everything (F)">
+                <i class="fas fa-expand"></i>
+            </button>
+            <button id="home-view" class="tool-btn icon-btn" title="Home view (H)">
+                <i class="fas fa-home"></i>
             </button>
             <button class="tool-btn active icon-btn" id="toggle-grid" title="Toggle Grid">
                 <i class="fas fa-border-all"></i>
@@ -413,6 +416,6 @@
     <script src="vendor/gsap.min.js"></script>
     <script src="vendor/three/examples/utils/BufferGeometryUtils.js"></script>
     <script src="vendor/three/examples/loaders/SVGLoader.js"></script>
-    <script type="module" src="js/app.js?v=13"></script>
+    <script type="module" src="js/app.js?v=14"></script>
 </body>
 </html>

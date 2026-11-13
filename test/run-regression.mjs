@@ -21,18 +21,21 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = normalize(join(fileURLToPath(import.meta.url), '..', '..'));
-const RUN_TIMEOUT_MS = 180000;
+const RUN_TIMEOUT_MS = 300000; // the suite is long; a hang is reported with the last completed check
 
 const MIME = {
     '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
     '.css': 'text/css', '.json': 'application/json'
 };
 
+let lastProgress = '(none yet)';
 let resolveResults;
 const resultsPromise = new Promise(resolve => { resolveResults = resolve; });
 
 const server = createServer(async (req, res) => {
     const path = decodeURIComponent(req.url.split('?')[0]);
+
+    if (path === '/__progress') { lastProgress = decodeURIComponent(req.url.split('?')[1] || ''); res.writeHead(204).end(); return; }
 
     if (req.method === 'POST' && path === '/__results') {
         const chunks = [];
@@ -115,7 +118,8 @@ await rm(profileDir, { recursive: true, force: true }).catch(() => {});
 
 if (raw === null) {
     console.error(`Harness did not report within ${RUN_TIMEOUT_MS / 1000}s.`);
-    console.error('Either it threw while loading, or the browser could not reach the CDN scripts.');
+    console.error(`Last check completed: ${lastProgress}`);
+    console.error('Either it threw while loading, or a step never finished (the check after the last one above).');
     process.exit(1);
 }
 

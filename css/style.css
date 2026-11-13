@@ -237,7 +237,7 @@ input, textarea {
     z-index: 100;
     /* Stops above the ViewCube, which is anchored bottom-right in the same column.
        Verified by test/measure-layout. */
-    max-height: calc(100vh - 330px);
+    max-height: calc(100vh - 372px);
     overflow-y: auto;
     /* hide scrollbar for clean look */
     -ms-overflow-style: none;
@@ -473,7 +473,7 @@ body.touch-mode .tool-select { min-height: 40px; }
 
     /* Creation tools run down the left, below both top rows, scrolling rather than growing
        into the variables panel. */
-    #left-sidebar { top: 132px; left: 8px; max-height: calc(100vh - 330px); overflow-y: auto; }
+    #left-sidebar { top: 132px; left: 8px; max-height: calc(100vh - 372px); overflow-y: auto; }
 
     /* Properties/BOM/lifecycle: narrower, and capped so it cannot reach the bottom strip. */
     #right-sidebar { top: 132px; bottom: auto; right: 8px; width: 168px; max-height: 38vh; }
@@ -623,3 +623,7 @@ body.touch-mode #btn-help { display: none; }
 .gallery-item:hover { background: var(--btn-hover); border-color: var(--accent); }
 .gallery-item svg { width: 34px; height: 34px; }
 @media (max-width: 768px) { #shape-gallery { top: 132px; left: 100px; width: calc(100vw - 116px); max-width: 264px; } }
+
+/* The ViewCube's button row wraps to two lines rather than widening the panel. */
+#viewcube-wrapper { max-width: 214px; box-sizing: border-box; }
+#viewcube-wrapper > div:nth-child(2) { flex-wrap: wrap; }

@@ -873,24 +873,55 @@ function toggleProjection() {
     controls.update(); updateStatus(`Projection: ${isOrthographic ? 'Orthographic' : 'Perspective'}`);
 }
 
-function centerSelection() {
-    if (selectedShapes.length === 0) return;
-    const box = new THREE.Box3();
-    selectedShapes.forEach(mesh => box.expandByObject(mesh));
-    const center = box.getCenter(new THREE.Vector3());
-    
-    const offset = new THREE.Vector3().subVectors(center, controls.target);
-    const targetPos = new THREE.Vector3().copy(activeCamera.position).add(offset);
-    
+// --- Camera: fit and home ---
+const HOME_POSITION = new THREE.Vector3(10, 10, 10);
+
+function animateCamera({ target, position, zoom }) {
     controls.enabled = false;
-    gsap.to(controls.target, {
-        x: center.x, y: center.y, z: center.z, duration: 0.6, ease: "power2.out"
-    });
+    gsap.killTweensOf(controls.target); gsap.killTweensOf(activeCamera.position);
+    if (zoom !== undefined) gsap.killTweensOf(activeCamera);
+    gsap.to(controls.target, { x: target.x, y: target.y, z: target.z, duration: 0.6, ease: 'power2.out' });
+    if (zoom !== undefined) gsap.to(activeCamera, { zoom, duration: 0.6, ease: 'power2.out' });
     gsap.to(activeCamera.position, {
-        x: targetPos.x, y: targetPos.y, z: targetPos.z, duration: 0.6, ease: "power2.out", 
-        onUpdate: () => { activeCamera.lookAt(controls.target); },
+        x: position.x, y: position.y, z: position.z, duration: 0.6, ease: 'power2.out',
+        onUpdate: () => { activeCamera.lookAt(controls.target); if (zoom !== undefined) activeCamera.updateProjectionMatrix(); },
         onComplete: () => { controls.enabled = true; controls.update(); }
     });
+}
+
+// Frames the selection — or everything when nothing is selected (or `everything` is set) —
+// keeping the current viewing direction. Perspective moves back far enough for the bounding
+// sphere to fit the narrower of the two fields of view; orthographic keeps its distance and
+// zooms instead.
+function fitView(everything = false, quiet = false) {
+    const list = !everything && selectedShapes.length ? selectedShapes : shapes;
+    const box = new THREE.Box3();
+    list.forEach(mesh => box.expandByObject(mesh));
+    if (box.isEmpty()) { homeView(); return; }
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const radius = Math.max(sphere.radius, 0.05) * 1.15;
+    const dir = activeCamera.position.clone().sub(controls.target);
+    if (dir.lengthSq() < 1e-9) dir.set(1, 1, 1);
+    dir.normalize();
+
+    if (isOrthographic) {
+        const baseH = activeCamera.top - activeCamera.bottom, baseW = activeCamera.right - activeCamera.left;
+        const zoom = Math.min(baseH / (2 * radius), baseW / (2 * radius));
+        const dist = Math.max(activeCamera.position.distanceTo(controls.target), radius * 2);
+        animateCamera({ target: sphere.center, position: sphere.center.clone().addScaledVector(dir, dist), zoom: Math.max(zoom, 1e-4) });
+    } else {
+        const vHalf = THREE.MathUtils.degToRad(activeCamera.fov) / 2;
+        const hHalf = Math.atan(Math.tan(vHalf) * activeCamera.aspect);
+        const dist = radius / Math.sin(Math.min(vHalf, hHalf));
+        animateCamera({ target: sphere.center, position: sphere.center.clone().addScaledVector(dir, dist) });
+    }
+    if (!quiet) updateStatus(!everything && selectedShapes.length ? 'Fitted the view to the selection.' : 'Fitted the view to everything.');
+}
+
+function homeView() {
+    const target = new THREE.Vector3(0, 0, 0);
+    animateCamera({ target, position: HOME_POSITION.clone(), zoom: isOrthographic ? 1 : undefined });
+    updateStatus('Home view.');
 }
 
 function initPostProcessing() {
@@ -1172,7 +1203,7 @@ function setupToolbar() {
     bindClick('ungroup-shapes', ungroupShapes);
     bindClick('distribute-shapes', toggleDistributeMode);
     bindClick('align-mode', toggleAlignMode); bindClick('projection-toggle', toggleProjection);
-    bindClick('center-selection', centerSelection);
+    bindClick('fit-view', () => fitView(false)); bindClick('home-view', homeView);
     bindClick('snap-toggle', () => setSnapEnabled(!snapEnabled)); bindClick('measure-tool', toggleMeasureMode);
     setupTransformInputs();
     setupShapeInputs();
@@ -1297,6 +1328,8 @@ function setupToolbar() {
             }
         }
         
+        if (!isInput && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); fitView(e.shiftKey); return; }
+        if (!isInput && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'h' || e.key === 'H')) { e.preventDefault(); homeView(); return; }
         if (!isInput && e.key === '?') { e.preventDefault(); showShortcuts(); return; }
         if (e.key === 'Enter' && isSketchMode) finishSketch();
         if (e.key === 'Enter' && isWiringMode) {
@@ -1549,6 +1582,7 @@ const SHORTCUTS = [
         ['Click', 'Select a shape'], ['Ctrl+Click', 'Add to / remove from the selection'], ['Shift+Drag', 'Box-select'],
         ['Ctrl+A', 'Select everything'], ['Esc', 'Clear the selection, or leave the active tool'], ['Delete', 'Delete the selection'],
         ['Ctrl+C / Ctrl+X / Ctrl+V', 'Copy, cut, paste'], ['Ctrl+D', 'Duplicate; move the copy and press Ctrl+D again to repeat that move'], ['Ctrl+G', 'Group'], ['Ctrl+Shift+G', 'Ungroup'] ] },
+    { heading: 'View', rows: [['F', 'Fit the view to the selection (or everything)'], ['Shift+F', 'Fit the view to everything'], ['H', 'Home view']] },
     { heading: 'Moving', rows: [
         ['Arrows', 'Nudge along the screen axes by the snap size'], ['Shift+Arrows', 'Nudge 10× the snap size'],
         ['Ctrl+Arrows', 'Nudge half the snap size'], ['Ctrl+Shift+Arrows', 'Nudge a tenth of the snap size'],
@@ -1648,7 +1682,7 @@ function addImportedMesh({ positions, format, recenter = true, keepPlace = false
     const tris = stored.length / 9;
     updateStatus(`${format === 'STL' || format === 'OBJ' || format === 'SVG' ? 'Imported' : 'Created'} ${mesh.name} (${format}, ${tris.toLocaleString()} triangles, ${(size.x * 10).toFixed(1)} × ${(size.y * 10).toFixed(1)} × ${(size.z * 10).toFixed(1)} mm)${note ? '. ' + note : ''}`);
     historyManager.saveState();
-    if (focus) centerSelection();
+    if (focus) fitView(false, true);
     return mesh;
 }
 

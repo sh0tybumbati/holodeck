@@ -32,6 +32,7 @@ window.addEventListener('error', e => {
 
 function check(name, pass, detail) {
     results.push({ name, pass: !!pass, detail: String(detail) });
+    fetch('/__progress?' + encodeURIComponent(name)).catch(() => {}); // lets the runner say where a hang happened
 }
 
 const status = () => document.getElementById('status-bar').innerText.trim();
@@ -103,7 +104,14 @@ async function saveAndParse() {
 }
 
 // --- selection helpers ----------------------------------------------------------------
+// Selects everything with Ctrl+A. (Dragging a screen-space box would miss anything the camera
+// has moved away from, and importing now frames the new shape.)
 function boxSelectAll() {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true }));
+}
+
+// The real shift+drag box select, for the one test that is about it.
+function dragBoxSelectAll() {
     const canvas = document.querySelector('#canvas-container canvas');
     canvas.dispatchEvent(new PointerEvent('pointerdown', { clientX: 2, clientY: 2, shiftKey: true, bubbles: true }));
     window.dispatchEvent(new PointerEvent('pointerup', { clientX: innerWidth - 2, clientY: innerHeight - 2, bubbles: true }));
@@ -626,7 +634,8 @@ async function run() {
         window.dispatchEvent(new PointerEvent('pointerup', at));
     };
     clearScene();
-    await new Promise(r => setTimeout(r, 900)); // let any camera centring animation finish
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'h', bubbles: true }));
+    await new Promise(r => setTimeout(r, 900)); // home view, and any camera animation, finished
     byId('sketch-tool').click();
     [[3, 2], [6, 2], [6, 5], [3, 5]].forEach(([x, z]) => clickGround(x, z));
     keys('Enter');
@@ -714,6 +723,7 @@ async function run() {
     check('snap-toggle-turns-snapping-back-on', /Snapping on/.test(status()) && byId('snap-toggle').classList.contains('active'), status());
 
     clearScene();
+    keys('h');
     await new Promise(r => setTimeout(r, 900));
     byId('measure-tool').click();
     clickGround(0, 0); clickGround(3, 4);
@@ -1043,6 +1053,75 @@ async function run() {
     check('undo-ends-a-repeat-chain-cleanly', /Duplicated/.test(status()) && !/Repeated/.test(status()), status());
 
     check('no-uncaught-errors-after-repeat', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 22. Camera fit and home.
+    clearScene();
+    keys('h'); await new Promise(r => setTimeout(r, 900));
+    document.querySelector('[data-shape="cube"]').click();
+    document.querySelector('[data-shape="sphere"]').click();
+    keys('Escape');
+    dragBoxSelectAll();
+    check('shift-drag-box-selects-what-is-on-screen', /2 shapes selected/.test(status()), status());
+
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    // Where the 8 corners of the selection's box land on screen, in normalised device coordinates.
+    const cornersOnScreen = (mmBox) => {
+        const cam = window.__camera; cam.updateMatrixWorld(true); cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
+        const [x0, y0, z0, x1, y1, z1] = mmBox.map(v => v / 10);
+        const pts = [];
+        for (const x of [x0, x1]) for (const y of [y0, y1]) for (const z of [z0, z1]) pts.push(new THREE.Vector3(x, y, z).project(cam));
+        const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+        return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys), behind: pts.some(p => p.z > 1) };
+    };
+    for (const [label, size] of [['large', [400, 300, 500]], ['tiny', [2, 2, 2]]]) {
+        clearScene();
+        await importViaInput(label + '.stl', asciiStl(box(...size)));
+        await sleep(900);
+        const sig = await sigOf(); const bx = b3(sig);
+        keys('h'); await sleep(900);                      // somewhere known and far from the shape
+        keys('Escape'); keys('a', { ctrlKey: true });
+        keys('f'); await sleep(900);
+        const c = cornersOnScreen(bx);
+        check(`fit-frames-a-${label}-selection-fully`, !c.behind && c.minX >= -1.001 && c.maxX <= 1.001 && c.minY >= -1.001 && c.maxY <= 1.001, JSON.stringify(c));
+        check(`fit-fills-a-good-part-of-the-screen-for-a-${label}-shape`, Math.max(c.maxX - c.minX, c.maxY - c.minY) > 0.8, `extent ${(Math.max(c.maxX - c.minX, c.maxY - c.minY)).toFixed(2)}`);
+    }
+
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    document.querySelector('[data-shape="cone"]').click();
+    await sleep(100);
+    keys('Escape');
+    keys('f', { shiftKey: true }); await sleep(900);
+    check('shift-f-fits-everything-when-nothing-is-selected', /Fitted the view to everything/.test(status()), status());
+
+    keys('h'); await sleep(900);
+    const home = window.__camera.position;
+    check('h-goes-to-the-home-view', Math.abs(home.x - 10) < 0.05 && Math.abs(home.y - 10) < 0.05 && Math.abs(home.z - 10) < 0.05, `(${home.x.toFixed(2)},${home.y.toFixed(2)},${home.z.toFixed(2)})`);
+
+    byId('fit-view').click(); await sleep(900);
+    check('fit-button-works', /Fitted the view/.test(status()), status());
+    byId('home-view').click(); await sleep(900);
+    check('home-button-works', /Home view/.test(status()), status());
+
+    byId('projection-toggle').click();            // orthographic: fit zooms rather than dollies
+    await sleep(100);
+    keys('f'); await sleep(900);
+    check('fit-works-in-orthographic', /Fitted the view/.test(status()), status());
+    keys('h'); await sleep(900);
+    byId('projection-toggle').click();
+    await sleep(100);
+
+    clearScene();
+    keys('f'); await sleep(900);
+    check('fit-with-an-empty-scene-goes-home', /Home view/.test(status()), status());
+
+    const typing = document.createElement('input'); document.body.appendChild(typing); typing.focus();
+    const before = status();
+    typing.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', bubbles: true }));
+    check('f-and-h-are-ignored-while-typing-in-a-field', status() === before, status());
+    typing.remove();
+
+    check('no-uncaught-errors-after-camera', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }
