@@ -4,6 +4,7 @@ import { showFormDialog, showInfoDialog, loadPrefs, savePrefs, describeTransform
 import { kvGet, kvPut, kvDelete } from './storage.js';
 import { EXPORT_FORMATS, countTriangles } from './exporters.js';
 import { SHAPES, SHAPE_ORDER, buildShape } from './shapes.js';
+import { revolveAroundAxis } from './revolve.js';
 import { evaluateParts } from './csg-core.js';
 import { analyzeMesh, repairMesh, describeHealth } from './meshtools.js';
 import { revolveProfile, mirrorPositions, flipWinding, signedVolume, beveledBox, normalizeEdge, frustum } from './modeling.js';
@@ -12,6 +13,7 @@ import { revolveProfile, mirrorPositions, flipWinding, signedVolume, beveledBox,
 let scene, camera, renderer, controls, transformControl, selectionBox;
 let selectionDiv;
 let isAreaSelecting = false;
+let areaSelectAdditive = false;
 let selectionStartPoint = new THREE.Vector2();
 let shapes = [];
 let selectedShapes = []; // Multi-select support
@@ -199,6 +201,11 @@ function init() {
 
     // Orbit Controls
     controls = new THREE.OrbitControls(activeCamera, renderer.domElement);
+    // Middle-drag orbits and right-drag pans; the left button is for selecting (a box on empty
+    // space) and moving shapes, so it must not also turn the camera. The wheel still zooms, and
+    // touch is untouched (one finger orbits, two pinch and pan).
+    controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
+    renderer.domElement.addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); }); // no browser autoscroll
     controls.enableDamping = true;
     controls.enablePan = true;
     controls.panSpeed = 0.8;
@@ -1207,7 +1214,7 @@ function setupToolbar() {
     bindClick('snap-toggle', () => setSnapEnabled(!snapEnabled)); bindClick('measure-tool', toggleMeasureMode);
     setupTransformInputs();
     setupShapeInputs();
-    bindClick('duplicate-selected', duplicateSelection); bindClick('mirror-selected', mirrorSelection);
+    bindClick('duplicate-selected', duplicateSelection); bindClick('mirror-selected', mirrorSelection); bindClick('revolve-selected', revolveSelection);
     bindClick('array-selected', arraySelection); bindClick('round-edges', roundEdges); bindClick('sketch-tool', toggleSketchMode);
     
     document.getElementById('snap-precision')?.addEventListener('change', (e) => { snapPrecision = parseFloat(e.target.value); updateTransformSnap(); });
@@ -1579,10 +1586,10 @@ async function offerRestore() {
 const SHORTCUTS = [
     { heading: 'Project', rows: [['Ctrl+S', 'Save project (.holo)'], ['Ctrl+Z', 'Undo'], ['Ctrl+Shift+Z / Ctrl+Y', 'Redo'], ['?', 'Show this list']] },
     { heading: 'Selection & editing', rows: [
-        ['Click', 'Select a shape'], ['Ctrl+Click', 'Add to / remove from the selection'], ['Shift+Drag', 'Box-select'],
+        ['Click', 'Select a shape; click empty space to deselect'], ['Drag', 'Box-select shapes on empty space'], ['Ctrl+Click / Shift+Click', 'Add to / remove from the selection'], ['Shift+Drag / Ctrl+Drag', 'Box-select and add to the selection'],
         ['Ctrl+A', 'Select everything'], ['Esc', 'Clear the selection, or leave the active tool'], ['Delete', 'Delete the selection'],
         ['Ctrl+C / Ctrl+X / Ctrl+V', 'Copy, cut, paste'], ['Ctrl+D', 'Duplicate; move the copy and press Ctrl+D again to repeat that move'], ['Ctrl+G', 'Group'], ['Ctrl+Shift+G', 'Ungroup'] ] },
-    { heading: 'View', rows: [['F', 'Fit the view to the selection (or everything)'], ['Shift+F', 'Fit the view to everything'], ['H', 'Home view']] },
+    { heading: 'View', rows: [['Middle-drag', 'Orbit the camera'], ['Right-drag', 'Pan'], ['Scroll', 'Zoom'], ['F', 'Fit the view to the selection (or everything)'], ['Shift+F', 'Fit the view to everything'], ['H', 'Home view']] },
     { heading: 'Moving', rows: [
         ['Arrows', 'Nudge along the screen axes by the snap size'], ['Shift+Arrows', 'Nudge 10× the snap size'],
         ['Ctrl+Arrows', 'Nudge half the snap size'], ['Ctrl+Shift+Arrows', 'Nudge a tenth of the snap size'],
@@ -1750,6 +1757,63 @@ function duplicateSelection() {
     repeatState = { bases, current: clones, baseline: clones.map(c => c.matrixWorld.clone()), deltas, count: continuing ? st.count + 1 : 1 };
     historyManager.saveState();
     updateStatus(continuing ? `Repeated the last move (copy ${repeatState.count}).` : `Duplicated ${clones.length} shape(s). Move the copy, then Ctrl+D to repeat that move.`);
+}
+
+// Revolve: spin the selected shape or group a full turn around an axis and replace it with the
+// solid that sweeps out — a slice of toast with a crust rim becomes a rimmed wheel. The work is
+// done by js/revolve.js; this is the dialog and the bookkeeping.
+async function revolveSelection() {
+    const list = selectedShapes.filter(m => !m.userData.isHole);
+    if (list.length === 0) { updateStatus('Select a shape or group to revolve.'); return; }
+
+    const parts = list.map(worldPositionsOf);
+    const all = Float32Array.from(parts.flatMap(p => Array.from(p)));
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < all.length; i += 3) for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], all[i + k]); max[k] = Math.max(max[k], all[i + k]); }
+
+    const prefs = loadPrefs('revolve', { axis: 'y', px: 'min', py: 'center', pz: 'center', segments: 64, detail: '480', keep: false });
+    const where = k => ({ id: 'p' + 'xyz'[k], label: `Axis position along ${'XYZ'[k]}`, type: 'select', value: prefs['p' + 'xyz'[k]],
+        showIf: f => f.axis !== 'xyz'[k],
+        options: [['min', `At the low-${'XYZ'[k]} end of the selection`], ['center', 'Through its middle'], ['max', `At the high-${'XYZ'[k]} end of the selection`], ['origin', 'At the world origin']] });
+    const v = await showFormDialog({
+        title: 'Revolve around an axis', confirmLabel: 'Revolve',
+        message: `Spins ${list.length === 1 ? list[0].name : list.length + ' shapes'} a full turn around the axis and replaces it with the solid that sweeps out.`,
+        fields: [
+            { id: 'axis', label: 'Axis direction', type: 'select', value: prefs.axis, options: [['x', 'X (left–right)'], ['y', 'Y (up–down)'], ['z', 'Z (front–back)']] },
+            where(0), where(1), where(2),
+            { id: 'segments', label: 'Smoothness', type: 'number', min: 8, max: 180, step: 4, value: prefs.segments, hint: 'How many facets round the full turn.' },
+            { id: 'detail', label: 'Outline detail', type: 'select', value: prefs.detail, options: [['480', 'Normal'], ['960', 'High (slower)'], ['1600', 'Maximum (slowest)']],
+              hint: 'How finely the shape\'s outline is traced before spinning it.' },
+            { id: 'keep', label: 'Keep the original shape', type: 'checkbox', value: prefs.keep }
+        ]
+    });
+    if (!v) return;
+    savePrefs('revolve', v);
+
+    const k = 'xyz'.indexOf(v.axis);
+    const point = [0, 0, 0];
+    for (let c = 0; c < 3; c++) {
+        if (c === k) continue;
+        const choice = v['p' + 'xyz'[c]];
+        point[c] = choice === 'min' ? min[c] : choice === 'max' ? max[c] : choice === 'center' ? (min[c] + max[c]) / 2 : 0;
+    }
+    const dir = [0, 0, 0]; dir[k] = 1;
+
+    updateStatus('Revolving…');
+    await new Promise(r => setTimeout(r, 30)); // let the status paint before the (synchronous) work
+    try {
+        const result = revolveAroundAxis(all, { point, dir }, { segments: Math.round(v.segments), resolution: Number(v.detail) });
+        const mat = Array.isArray(list[0].material) ? list[0].material[0] : list[0].material;
+        const source = `${list[0].name}${list.length > 1 ? ' +' + (list.length - 1) : ''}`;
+        const name = `Revolve of ${source}`;
+        if (!v.keep) { selectedShapes = list.slice(); deleteSelected({ quiet: true }); }
+        const mesh = addImportedMesh({ positions: result.positions, format: 'Revolve', keepPlace: true, color: mat.color.getHex(), focus: false }, name);
+        const axisAt = point.filter((_, c) => c !== k).map(x => (x * 10).toFixed(1)).join(', ');
+        updateStatus(`Revolved ${source}: ${result.loops} outline loop(s), axis along ${v.axis.toUpperCase()} through (${'xyz'.split('').filter(c => c !== v.axis).join(', ')}) = (${axisAt}) mm.`);
+        return mesh;
+    } catch (err) {
+        updateStatus(`Revolve failed: ${err.message}`);
+    }
 }
 
 async function mirrorSelection() {
@@ -2896,12 +2960,9 @@ function onPointerDown(event) {
     if (event.target.closest('.toolbar, .glass-panel, #theme-toggles, #viewcube-wrapper')) return;
     if (transformControl.dragging) return;
     
-    if (event.shiftKey) {
-        isAreaSelecting = true; controls.enabled = false;
-        selectionStartPoint.set(event.clientX, event.clientY);
-        selectionDiv.style.left = event.clientX + 'px'; selectionDiv.style.top = event.clientY + 'px';
-        selectionDiv.style.width = '0px'; selectionDiv.style.height = '0px'; selectionDiv.style.display = 'block';
-        selectionBox.startPoint.set((event.clientX / window.innerWidth) * 2 - 1, -(event.clientY / window.innerHeight) * 2 + 1, 0.5);
+    if (event.shiftKey) { // shift-drag adds a box of shapes to the selection; a shift-click toggles one
+        pointerDownPos.set(event.clientX, event.clientY);
+        beginAreaSelect(event, true);
         return;
     }
     
@@ -2952,11 +3013,23 @@ function onPointerDown(event) {
     if (intersects.length > 0) {
         const clickedShape = intersects[0].object;
         if (selectedShapes.indexOf(clickedShape) === -1 || (event.ctrlKey || event.metaKey || event.shiftKey)) selectShape(clickedShape, event);
-    } else {
-        if (!transformControl.axis && !isAlignMode && !isDistributeMode) {
+    } else if (!transformControl.axis && !isAlignMode && !isDistributeMode) {
+        if (event.button === 0 && event.pointerType !== 'touch') {
+            // Empty space with the left button: a drag draws a selection box, a plain click
+            // clears the selection (decided on release). Touch keeps its one-finger orbit.
+            beginAreaSelect(event, !!(event.ctrlKey || event.metaKey));
+        } else {
             selectedShapes = []; selectedShape = null; transformControl.detach(); updateSelectionEffects(); updateStatus('Selection cleared');
         }
     }
+}
+
+function beginAreaSelect(event, additive) {
+    isAreaSelecting = true; areaSelectAdditive = additive; controls.enabled = false;
+    selectionStartPoint.set(event.clientX, event.clientY);
+    selectionDiv.style.left = event.clientX + 'px'; selectionDiv.style.top = event.clientY + 'px';
+    selectionDiv.style.width = '0px'; selectionDiv.style.height = '0px'; selectionDiv.style.display = 'block';
+    selectionBox.startPoint.set((event.clientX / window.innerWidth) * 2 - 1, -(event.clientY / window.innerHeight) * 2 + 1, 0.5);
 }
 
 function onPointerMove(event) {
@@ -2989,9 +3062,26 @@ function onPointerMove(event) {
 
 function onPointerUp(event) {
     if (isAreaSelecting) {
+        const additive = areaSelectAdditive;
         isAreaSelecting = false; selectionDiv.style.display = 'none'; controls.enabled = true;
+
+        if (new THREE.Vector2(event.clientX, event.clientY).distanceTo(pointerDownPos) < 5) {
+            // Not a drag but a click. Shift/Ctrl-click toggles the shape under the cursor;
+            // a plain click on empty space clears the selection.
+            if (additive) {
+                mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+                raycaster.setFromCamera(mouse, activeCamera);
+                const hit = raycaster.intersectObjects(shapes, false)[0];
+                if (hit) selectShape(hit.object, { ctrlKey: true });
+            } else {
+                selectedShapes = []; selectedShape = null; transformControl.detach(); updateSelectionEffects(); updateStatus('Selection cleared');
+            }
+            return;
+        }
+
         selectionBox.endPoint.set((event.clientX / window.innerWidth) * 2 - 1, -(event.clientY / window.innerHeight) * 2 + 1, 0.5);
         const newSelections = selectionBox.select().filter(obj => shapes.includes(obj));
+        if (!additive) { selectedShapes = []; selectedShape = null; transformControl.detach(); } // a plain box replaces the selection
         newSelections.forEach(shape => { if (!selectedShapes.includes(shape)) selectedShapes.push(shape); });
         if (selectedShapes.length > 0) { selectedShape = selectedShapes[selectedShapes.length - 1]; if (!isAlignMode) transformControl.attach(selectedShape); }
         updateSelectionEffects(); updateStatus(`${selectedShapes.length} shapes selected`);
@@ -3511,7 +3601,8 @@ function reconcileBOM() {
     if (bomItems.length !== before) renderBOM();
 }
 
-function deleteSelected() {
+function deleteSelected(options) {
+    const quiet = !!(options && options.quiet === true); // a click handler passes its event here, so only an explicit flag counts
     if (selectedShapes.length === 0) return;
     transformControl.detach();
     const removed = selectedShapes.slice();
@@ -3524,8 +3615,7 @@ function deleteSelected() {
     updateSelectionEffects();
     removed.forEach(disposeShape);
     reconcileBOM();
-    historyManager.saveState();
-    updateStatus('Deleted selected shapes');
+    if (!quiet) { historyManager.saveState(); updateStatus('Deleted selected shapes'); }
 }
 
 function toggleGrid() {

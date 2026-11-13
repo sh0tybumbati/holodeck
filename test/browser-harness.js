@@ -1123,6 +1123,110 @@ async function run() {
 
     check('no-uncaught-errors-after-camera', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
+    // 23. Revolve a selection around an axis.
+    // A "toast slice": 30 mm wide, 20 mm tall and 2 mm thick, left where the file puts it
+    // (x 100..130, y 100..120, z 100..102 mm).
+    clearScene();
+    await importViaInput('toast.stl', asciiStl(box(30, 20, 2)), { recenter: false });
+    byId('revolve-selected').click();
+    await driveDialog({ axis: 'y', px: 'min', pz: 'center', segments: 48, detail: '480', keep: false });
+    await sleep(400);
+    const revolveStatus = status();
+    const wheel = await sigOf(); const wb = b3(wheel);
+    check('revolving-a-slice-about-its-end-makes-a-disc-of-the-right-size',
+        wheel && Math.abs(wb[0] - 70) < 0.5 && Math.abs(wb[3] - 130) < 0.5 && Math.abs(wb[2] - 71) < 0.5 && Math.abs(wb[5] - 131) < 0.5 && Math.abs(wb[1] - 100) < 0.2 && Math.abs(wb[4] - 120) < 0.2, fmt(wheel));
+    check('the-original-is-replaced-by-the-wheel-and-the-status-describes-the-axis',
+        wheel && wheel.facets === 48 + 48 + 96 && /Revolved toast: 1 outline loop\(s\), axis along Y/.test(revolveStatus),
+        `facets=${wheel && wheel.facets} status="${revolveStatus}"`);
+    byId('btn-undo').click();
+    const undone = await sigOf();
+    check('revolve-is-a-single-undo-step-back-to-the-slice', undone && undone.facets === 12 && undone.bounds === '[100.000,100.000,100.000]..[130.000,120.000,102.000]', fmt(undone));
+
+    // Keep the original, and a different axis position.
+    clearScene();
+    await importViaInput('toast.stl', asciiStl(box(30, 20, 2)), { recenter: false });
+    byId('revolve-selected').click();
+    await driveDialog({ axis: 'y', px: 'max', pz: 'center', segments: 32, detail: '480', keep: true });
+    await sleep(400);
+    const both = await sigOf();
+    check('keep-original-leaves-the-slice-in-place-too', both && both.facets === 12 + 32 + 32 + 64, fmt(both));
+
+    // A group with a hole in it (a toast-with-a-window) revolves to a wheel with a cavity.
+    clearScene();
+    await importViaInput('frame-a.stl', asciiStl(box(30, 20, 2)), { recenter: false });
+    byId('revolve-selected').click();
+    await driveDialog({ axis: 'x', py: 'center', pz: 'center', segments: 24, detail: '480', keep: false });
+    await sleep(400);
+    check('the-x-axis-also-works', /Revolved/.test(status()) && !/failed/.test(status()), status());
+
+    // Nothing selected, and an unusable selection, give readable messages.
+    clearScene();
+    byId('revolve-selected').click();
+    check('revolve-with-nothing-selected-says-so', /Select a shape or group to revolve/.test(status()), status());
+
+    // A group revolves through its boolean result.
+    clearScene();
+    document.querySelector('[data-shape="cube"]').click();
+    document.querySelector('[data-shape="cone"]').click();
+    keys('a', { ctrlKey: true });
+    byId('group-shapes').click();
+    byId('revolve-selected').click();
+    await driveDialog({ axis: 'y', px: 'center', pz: 'center', segments: 24, detail: '480', keep: false });
+    await sleep(500);
+    check('a-group-revolves', /Revolved/.test(status()), status());
+
+    check('no-uncaught-errors-after-revolve', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 24. Mouse mapping: middle orbits, right pans, left draws a selection box.
+    const orbit = window.__controlsList[0];
+    check('middle-drag-orbits-right-drag-pans-left-does-neither',
+        orbit && orbit.mouseButtons.LEFT === null && orbit.mouseButtons.MIDDLE === THREE.MOUSE.ROTATE && orbit.mouseButtons.RIGHT === THREE.MOUSE.PAN,
+        JSON.stringify(orbit && orbit.mouseButtons));
+    const canvas24 = () => document.querySelector('#canvas-container canvas');
+    const drag = (x0, y0, x1, y1, extra = {}) => {
+        canvas24().dispatchEvent(new PointerEvent('pointerdown', { clientX: x0, clientY: y0, button: 0, bubbles: true, ...extra }));
+        window.dispatchEvent(new PointerEvent('pointerup', { clientX: x1, clientY: y1, bubbles: true, ...extra }));
+    };
+    clearScene();
+    keys('h'); await sleep(900);
+    document.querySelector('[data-shape="cube"]').click();
+    document.querySelector('[data-shape="sphere"]').click();
+    document.querySelector('[data-shape="cone"]').click();
+    keys('Escape');
+    drag(2, 2, innerWidth - 2, innerHeight - 2);
+    check('plain-left-drag-on-empty-space-box-selects', /3 shapes selected/.test(status()), status());
+
+    drag(2, 2, 60, 60);
+    check('a-plain-box-over-nothing-replaces-the-selection-with-nothing', /0 shapes selected/.test(status()), status());
+
+    drag(2, 2, innerWidth - 2, innerHeight - 2);
+    drag(2, 2, 60, 60, { shiftKey: true });
+    check('shift-box-adds-and-keeps-the-existing-selection', /3 shapes selected/.test(status()), status());
+    drag(2, 2, 60, 60, { ctrlKey: true });
+    check('ctrl-box-also-adds', /3 shapes selected/.test(status()), status());
+
+    drag(5, 5, 5, 5);
+    check('a-plain-click-on-empty-space-clears-the-selection', /Selection cleared/.test(status()), status());
+
+    // Shift-click toggles the shape under the cursor.
+    clearScene();
+    await importViaInput('target.stl', asciiStl(box(20, 10, 30)));
+    keys('h'); await sleep(900);
+    keys('Escape');
+    const aim = (() => { const cam = window.__camera; cam.updateMatrixWorld(true); cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
+        const v = new THREE.Vector3(0, 0.5, 0).project(cam); return [(v.x + 1) / 2 * innerWidth, (1 - v.y) / 2 * innerHeight]; })();
+    drag(aim[0], aim[1], aim[0], aim[1], { shiftKey: true });
+    check('shift-click-selects-the-shape-under-the-cursor', /1 shapes selected/.test(status()), status());
+    drag(aim[0], aim[1], aim[0], aim[1], { shiftKey: true });
+    check('shift-click-again-deselects-it', /0 shapes selected/.test(status()), status());
+
+    // Touch keeps the old behaviour: a tap on empty space clears, with no box.
+    drag(aim[0], aim[1], aim[0], aim[1], { shiftKey: true });
+    drag(5, 5, 5, 5, { pointerType: 'touch' });
+    check('touch-tap-on-empty-space-still-clears-immediately', /Selection cleared/.test(status()), status());
+
+    check('no-uncaught-errors-after-mouse-mapping', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }
 

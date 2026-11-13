@@ -5,7 +5,7 @@ Holodeck is a web-based, 3D CAD modeling and design tool built with Three.js. It
 ## Features
 
 - **3D Workspace**: A searchable shape gallery (wedge, roof, pyramid, polygon, half sphere, torus, tube, star, heart, paraboloid), cubes, spheres and a cone/cylinder tool (top radius, height, bottom radius); bevel or chamfer cube and cone edges with a chosen radius and number of steps.
-- **Modelling**: Duplicate and repeat (Ctrl+D, move the copy, Ctrl+D again repeats the move), mirror, linear/polar arrays, bevel/chamfer on cubes and cones, and a sketch tool that extrudes or revolves a drawn polygon.
+- **Modelling**: Revolve a selection around an axis (a profile becomes a wheel), duplicate and repeat (Ctrl+D, move the copy, Ctrl+D again repeats the move), mirror, linear/polar arrays, bevel/chamfer on cubes and cones, and a sketch tool that extrudes or revolves a drawn polygon.
 - **Transform Tools**: Translate, rotate, and scale your objects intuitively, or type exact position and rotation values; a live readout shows the snapped value while dragging, and a measure tool reports distances between points.
 - **Advanced Alignment & Distribution**: Snap objects relative to each other's edges or centers using custom 3D gizmos.
 - **Variables & Math**: Define numeric variables and formulas in the properties panel to drive your design programmatically.
@@ -14,6 +14,7 @@ Holodeck is a web-based, 3D CAD modeling and design tool built with Three.js. It
 - **Export**: STL (binary or ASCII), OBJ and 3MF, all in millimetres; optionally just the selected shapes.
 - **Import**: Bring in **STL** (binary or ASCII), **OBJ** and **SVG** files with the import button or by dropping them on the page. STL/OBJ are read as millimetres (matching the STL export, so a file round-trips at its original size); an SVG is extruded 5 mm, 1 user unit = 1 CSS px, holes preserved. Imported meshes are ordinary shapes: move, scale, colour, group, mark as holes, and they are saved inside the `.holo` file. Limit: 1,000,000 triangles.
 - **Safety net**: autosave with restore-on-launch, an unsaved-changes guard, and mesh health warnings for imports that boolean operations may choke on. Large groups compute in a background worker.
+- **Mouse**: middle-drag orbits, right-drag pans, scroll zooms; left-drag on empty space box-selects (Shift/Ctrl adds).
 - **Hotkeys**: press `?` in the app for the full list. Supports standard shortcuts (Ctrl+C, Ctrl+V, Ctrl+X, Delete) and object grouping (Ctrl+G / Ctrl+Shift+G).
 
 ## Usage

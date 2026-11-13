@@ -160,6 +160,9 @@
             <button class="tool-btn" id="mirror-selected" title="Mirror a copy across a plane">
                 <i class="fas fa-exchange-alt"></i>
             </button>
+            <button class="tool-btn" id="revolve-selected" title="Revolve the selection around an axis (a profile becomes a wheel, ring or vase)">
+                <i class="fas fa-circle-notch"></i>
+            </button>
             <button class="tool-btn" id="array-selected" title="Linear / polar array">
                 <i class="fas fa-th"></i>
             </button>
@@ -397,7 +400,7 @@
     <!-- Status Bar -->
     <div id="status-bar" class="glass-panel" role="status" aria-live="polite">
         <i class="fas fa-info-circle status-icon"></i>
-        <span>Ready. Click shapes to select, drag to move. Ctrl+Click to multi-select.</span>
+        <span>Ready. Click to select, drag empty space to box-select, middle-drag to orbit, right-drag to pan.</span>
     </div>
 
     <!-- Scripts -->
@@ -416,6 +419,6 @@
     <script src="vendor/gsap.min.js"></script>
     <script src="vendor/three/examples/utils/BufferGeometryUtils.js"></script>
     <script src="vendor/three/examples/loaders/SVGLoader.js"></script>
-    <script type="module" src="js/app.js?v=14"></script>
+    <script type="module" src="js/app.js?v=16"></script>
 </body>
 </html>
