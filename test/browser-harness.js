@@ -1227,6 +1227,82 @@ async function run() {
 
     check('no-uncaught-errors-after-mouse-mapping', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
+    // 25. Trim: stepped moulding round the outline, reeded band up a face.
+    clearScene();
+    await importViaInput('radio.stl', asciiStl(box(40, 20, 30)));           // x +-20, y 0..20, z +-15 mm
+    byId('trim-selected').click();
+    await driveDialog({ profile: 'steps', path: 'wrap', start: 0, count: 3, height: 4, depth: 2, widest: 'bottom', overlap: 0.3 });
+    await sleep(200);
+    const trimStatus = status();
+    const stepped = await sigOf();
+    check('steps-wrap-adds-a-stepped-ledge-three-steps-proud-all-round',
+        stepped && stepped.bounds === '[-26.000,0.000,-21.000]..[26.000,20.000,21.000]' && stepped.facets === 12 + 4 * 8 * 2, fmt(stepped));
+    check('trim-status-says-how-to-fuse-it', /Added steps trim round the outline/.test(trimStatus) && /Ctrl\+G/.test(trimStatus), trimStatus);
+
+    // The body stays selected, so a second trim goes on the body: a reeded band up the front. The
+    // base moulding pushes the combined bounding box out, but the band must sit on the body itself.
+    byId('trim-selected').click();
+    await driveDialog({ profile: 'reeded', path: 'band', face: 'front', along: 'vertical', position: 50, flutes: 5, pitch: 4, fill: 60, rib: 2, base: 1, shape: 'flat', overlap: 0.3 });
+    await sleep(200);
+    const twoTrims = await sigOf();
+    check('a-second-trim-goes-on-the-body-and-snaps-to-its-face-not-to-the-base-moulding',
+        twoTrims && twoTrims.bounds === '[-26.000,0.000,-21.000]..[26.000,20.000,21.000]', fmt(twoTrims));
+    byId('btn-undo').click();
+    keys('a', { ctrlKey: true });
+    byId('group-shapes').click();
+    for (let i = 0; i < 80 && !/Grouped|failed/.test(status()); i++) await sleep(50);
+    check('the-trim-groups-with-its-body', /Grouped shapes/.test(status()), status());
+    const fused = await sigOf();
+    check('the-fused-solid-keeps-its-outline', fused && fused.bounds === stepped.bounds && fused.facets > 12, fmt(fused));
+
+    clearScene();
+    await importViaInput('radio.stl', asciiStl(box(40, 20, 30)));
+    byId('trim-selected').click();
+    await driveDialog({ profile: 'reeded', path: 'band', face: 'front', along: 'vertical', position: 50, flutes: 5, pitch: 4, fill: 60, rib: 2, base: 1, shape: 'flat', overlap: 0.3 });
+    await sleep(200);
+    const band = await sigOf();
+    check('reeded-band-up-the-front-stands-proud-of-that-face-only',
+        band && band.bounds === '[-20.000,0.000,-15.000]..[20.000,20.000,18.000]' && band.facets > 12 + 40, fmt(band));
+    byId('btn-undo').click();
+    const bandUndone = await sigOf();
+    check('adding-trim-is-one-undo-step', bandUndone && bandUndone.facets === 12, fmt(bandUndone));
+
+    clearScene();
+    await importViaInput('radio.stl', asciiStl(box(40, 20, 30)));
+    byId('trim-selected').click();
+    await driveDialog({ profile: 'reeded', path: 'wrap', start: 0, flutes: 5, pitch: 4, fill: 60, rib: 2, base: 1, shape: 'round', overlap: 0.3 });
+    await sleep(200);
+    const wrapped = await sigOf();
+    check('reeded-ribs-wrap-the-outline-as-horizontal-bands',
+        wrapped && wrapped.bounds === '[-23.000,0.000,-18.000]..[23.000,20.000,18.000]', fmt(wrapped));
+
+    clearScene();
+    await importViaInput('radio.stl', asciiStl(box(40, 20, 30)));
+    byId('trim-selected').click();
+    await driveDialog({ profile: 'steps', path: 'wrap', start: 500 });
+    await sleep(200);
+    check('a-start-height-above-the-shape-is-refused-clearly', /Trim failed: That starting height is above the top/.test(status()), status());
+
+    clearScene();
+    byId('trim-selected').click();
+    check('trim-with-nothing-selected-says-so', /Select the shape you want to add trim to/.test(status()), status());
+
+    // A stepped body (a wide base tier with a narrower tower on top): the base moulding follows the
+    // bottom tier's outline, not the tower's.
+    clearScene();
+    await importViaInput('tier-a.stl', asciiStl(box(60, 10, 40)), { recenter: false });
+    const tierB = asciiStl(box(30, 20, 20).map(t => t.map((v, i) => v + [10, 10, 10][i % 3]))); // sits on top: x 10..40, y 10..30, z 10..30
+    await importViaInput('tier-b.stl', tierB, { recenter: false });
+    keys('a', { ctrlKey: true });
+    byId('trim-selected').click();
+    await driveDialog({ profile: 'steps', path: 'wrap', start: 0, count: 3, height: 3, depth: 2, widest: 'bottom', overlap: 0.3 });
+    await sleep(200);
+    const tiered = await sigOf();
+    check('the-base-moulding-follows-the-bottom-tier-of-a-stepped-body',
+        tiered && tiered.bounds === '[94.000,100.000,94.000]..[166.000,130.000,146.000]' /* the helper offsets files by +100 mm */, fmt(tiered));
+
+    check('no-uncaught-errors-after-trim', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }
 

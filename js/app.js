@@ -5,6 +5,7 @@ import { kvGet, kvPut, kvDelete } from './storage.js';
 import { EXPORT_FORMATS, countTriangles } from './exporters.js';
 import { SHAPES, SHAPE_ORDER, buildShape } from './shapes.js';
 import { revolveAroundAxis } from './revolve.js';
+import { stepsProfile, reededProfile, shiftProfile, sweepProfile, sliceOutline, footprintPath, facePath, snapPathToSurface } from './trim.js';
 import { evaluateParts } from './csg-core.js';
 import { analyzeMesh, repairMesh, describeHealth } from './meshtools.js';
 import { revolveProfile, mirrorPositions, flipWinding, signedVolume, beveledBox, normalizeEdge, frustum } from './modeling.js';
@@ -1214,7 +1215,7 @@ function setupToolbar() {
     bindClick('snap-toggle', () => setSnapEnabled(!snapEnabled)); bindClick('measure-tool', toggleMeasureMode);
     setupTransformInputs();
     setupShapeInputs();
-    bindClick('duplicate-selected', duplicateSelection); bindClick('mirror-selected', mirrorSelection); bindClick('revolve-selected', revolveSelection);
+    bindClick('duplicate-selected', duplicateSelection); bindClick('mirror-selected', mirrorSelection); bindClick('revolve-selected', revolveSelection); bindClick('trim-selected', trimSelection);
     bindClick('array-selected', arraySelection); bindClick('round-edges', roundEdges); bindClick('sketch-tool', toggleSketchMode);
     
     document.getElementById('snap-precision')?.addEventListener('change', (e) => { snapPrecision = parseFloat(e.target.value); updateTransformSnap(); });
@@ -1813,6 +1814,86 @@ async function revolveSelection() {
         return mesh;
     } catch (err) {
         updateStatus(`Revolve failed: ${err.message}`);
+    }
+}
+
+// Trim: run a moulding along the selection — a stepped base round its footprint, or a reeded band
+// up one of its faces. The geometry is in js/trim.js; this is the dialog and the bookkeeping. The
+// trim is a separate shape that overlaps the body slightly, so grouping the two (Ctrl+G) fuses them.
+async function trimSelection() {
+    const list = selectedShapes.filter(m => !m.userData.isHole);
+    if (list.length === 0) { updateStatus('Select the shape you want to add trim to.'); return; }
+
+    const all = Float32Array.from(list.map(worldPositionsOf).flatMap(p => Array.from(p)));
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < all.length; i += 3) for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], all[i + k]); max[k] = Math.max(max[k], all[i + k]); }
+
+    const pf = loadPrefs('trim', { profile: 'steps', path: 'wrap', start: 0, face: 'front', along: 'vertical', position: 50,
+        count: 3, height: 4, depth: 2, widest: 'bottom', flutes: 7, pitch: 5, fill: 60, rib: 2, base: 1, shape: 'flat', overlap: 0.3 });
+    const steps = f => f.profile === 'steps', reeded = f => f.profile === 'reeded', wrap = f => f.path === 'wrap', band = f => f.path === 'band';
+    const v = await showFormDialog({
+        title: 'Add trim', confirmLabel: 'Add trim',
+        message: `Sweeps a moulding along ${list.length === 1 ? list[0].name : list.length + ' shapes'}. It is made as a separate shape, and the body stays selected so you can add more trim; group them (Ctrl+G) to fuse.`,
+        fields: [
+            { id: 'profile', label: 'Moulding', type: 'select', value: pf.profile, options: [['steps', 'Steps (a stepped ledge)'], ['reeded', 'Reeded (parallel ribs)']] },
+            { id: 'path', label: 'Where', type: 'select', value: pf.path, options: [['wrap', 'Wrapped round the outline'], ['band', 'A band along one face']] },
+            { id: 'start', label: 'Starts this far up from the bottom', unit: 'mm', type: 'number', value: pf.start, min: 0, step: 1, showIf: wrap },
+            { id: 'face', label: 'Face', type: 'select', value: pf.face, showIf: band,
+              options: [['front', 'Front (+Z)'], ['back', 'Back (−Z)'], ['right', 'Right (+X)'], ['left', 'Left (−X)'], ['top', 'Top (+Y)']] },
+            { id: 'along', label: 'Direction', type: 'select', value: pf.along, showIf: band,
+              options: [['vertical', 'Up the face (front-to-back on top)'], ['horizontal', 'Across the face']] },
+            { id: 'position', label: 'Position across the face', unit: '%', type: 'number', value: pf.position, min: 0, max: 100, step: 5, showIf: band,
+              hint: '50 is the middle; the band runs the full length of the face.' },
+            { id: 'count', label: 'Steps', type: 'number', value: pf.count, min: 1, max: 16, step: 1, showIf: steps },
+            { id: 'height', label: 'Height of each step', unit: 'mm', type: 'number', value: pf.height, min: 0.1, step: 0.5, showIf: steps },
+            { id: 'depth', label: 'Each step stands out by', unit: 'mm', type: 'number', value: pf.depth, min: 0.1, step: 0.5, showIf: steps },
+            { id: 'widest', label: 'Widest step at', type: 'select', value: pf.widest, showIf: steps, options: [['bottom', 'The bottom'], ['top', 'The top']] },
+            { id: 'flutes', label: 'Ribs', type: 'number', value: pf.flutes, min: 1, max: 60, step: 1, showIf: reeded },
+            { id: 'pitch', label: 'Rib spacing', unit: 'mm', type: 'number', value: pf.pitch, min: 0.2, step: 0.5, showIf: reeded },
+            { id: 'fill', label: 'Rib width, share of the spacing', unit: '%', type: 'number', value: pf.fill, min: 5, max: 98, step: 5, showIf: reeded },
+            { id: 'rib', label: 'Rib height', unit: 'mm', type: 'number', value: pf.rib, min: 0.1, step: 0.5, showIf: reeded },
+            { id: 'base', label: 'Backing plate thickness', unit: 'mm', type: 'number', value: pf.base, min: 0, step: 0.5, showIf: reeded },
+            { id: 'shape', label: 'Rib shape', type: 'select', value: pf.shape, showIf: reeded, options: [['flat', 'Flat-topped'], ['round', 'Rounded']] },
+            { id: 'overlap', label: 'Tucked into the body by', unit: 'mm', type: 'number', value: pf.overlap, min: 0, step: 0.1,
+              hint: 'A little overlap makes grouping with the body reliable.' }
+        ]
+    });
+    if (!v) return;
+    savePrefs('trim', v);
+
+    try {
+        const cm = x => x / 10;
+        const embed = cm(v.overlap);
+        let profile;
+        if (v.profile === 'steps') {
+            profile = stepsProfile({ count: v.count, height: cm(v.height), depth: cm(v.depth), embed, widestAtBottom: v.widest === 'bottom' });
+            if (v.path === 'band') profile = shiftProfile(profile, -Math.round(v.count) * cm(v.height) / 2);
+        } else {
+            profile = reededProfile({ count: v.flutes, pitch: cm(v.pitch), fill: v.fill / 100, depth: cm(v.rib), base: cm(v.base), embed, round: v.shape === 'round' });
+            if (v.path === 'wrap') profile = shiftProfile(profile, Math.round(v.flutes) * cm(v.pitch) / 2); // ribs stack upward from the start height
+        }
+
+        let path;
+        if (v.path === 'wrap') {
+            const startY = min[1] + cm(v.start);
+            const reach = Math.max(...profile.map(p => p[1])) - Math.min(...profile.map(p => p[1]));
+            const sliceY = startY + Math.min(0.05, reach / 2); // traced just above the start, not on a face
+            if (sliceY >= max[1]) throw new Error('That starting height is above the top of the selection.');
+            path = footprintPath(sliceOutline(all, sliceY), startY);
+        } else {
+            path = snapPathToSurface(facePath({ min, max }, v.face, v.along, v.position / 100), all); // onto the body itself, not a flange
+        }
+
+        const positions = sweepProfile(profile, path.points, path.normals, path.side, path.closed);
+        const mat = Array.isArray(list[0].material) ? list[0].material[0] : list[0].material;
+        const label = v.profile === 'steps' ? 'Steps' : 'Reeded';
+        const trim = addImportedMesh({ positions, format: 'Trim', keepPlace: true, color: mat.color.getHex(), focus: false }, `${label} trim`);
+        // Leave the body selected so the next trim goes on the body, not on this one.
+        selectAll(list);
+        updateStatus(`Added ${label.toLowerCase()} trim ${v.path === 'wrap' ? 'round the outline' : 'along the ' + v.face + ' face'}. The body is still selected for more trim; select both and press Ctrl+G to fuse them.`);
+        return trim;
+    } catch (err) {
+        updateStatus(`Trim failed: ${err.message}`);
     }
 }
 
