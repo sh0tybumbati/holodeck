@@ -603,3 +603,23 @@ kbd {
 /* No keyboard to list shortcuts for on a phone, and the room is needed by the toolbars. */
 @media (max-width: 768px) { #btn-help { display: none; } }
 body.touch-mode #btn-help { display: none; }
+
+/* Shape gallery */
+#shape-gallery {
+    position: absolute; z-index: 150; top: 80px; left: 96px; width: 264px; max-height: calc(100vh - 240px); overflow-y: auto;
+    display: none; flex-direction: column; gap: 10px; padding: 12px;
+}
+#shape-gallery.active { display: flex; }
+#shape-search {
+    width: 100%; box-sizing: border-box; padding: 8px; font: inherit; color: var(--text-main);
+    background: var(--btn-bg); border: 1px solid var(--border-color); border-radius: 6px;
+}
+#shape-gallery-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.gallery-item {
+    display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px; cursor: pointer;
+    font: 11px 'Inter', sans-serif; color: var(--text-main); background: var(--btn-bg);
+    border: 1px solid var(--border-color); border-radius: 8px;
+}
+.gallery-item:hover { background: var(--btn-hover); border-color: var(--accent); }
+.gallery-item svg { width: 34px; height: 34px; }
+@media (max-width: 768px) { #shape-gallery { top: 132px; left: 100px; width: calc(100vw - 116px); max-width: 264px; } }

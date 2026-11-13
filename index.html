@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="vendor/fonts/inter.css">
     <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
     <!-- Styles -->
-    <link rel="stylesheet" href="css/style.css?v=5">
+    <link rel="stylesheet" href="css/style.css?v=6">
 </head>
 <body data-color-theme="holodeck" data-brightness="dark">
     <!-- Local Project Dashboard Overlay -->
@@ -127,6 +127,9 @@
             <button class="tool-btn" data-shape="cone" title="Add Cone / Cylinder (top radius, height, bottom radius)">
                 <i class="fas fa-caret-up"></i>
             </button>
+            <button class="tool-btn" id="shape-gallery-btn" title="More shapes: wedge, pyramid, torus, star, heart…" aria-haspopup="dialog">
+                <i class="fas fa-shapes"></i>
+            </button>
         </div>
         <div class="separator"></div>
         <div class="toolbar-group">
@@ -161,6 +164,12 @@
                 <i class="fas fa-vector-square"></i>
             </button>
         </div>
+    </div>
+
+    <!-- Shape gallery -->
+    <div id="shape-gallery" class="glass-panel" role="dialog" aria-label="Shape gallery">
+        <input type="search" id="shape-search" placeholder="Search shapes…" aria-label="Search shapes">
+        <div id="shape-gallery-grid"></div>
     </div>
 
     <!-- Top Toolbar (Transforms & Operations) -->
@@ -274,6 +283,7 @@
                 <label>L (Z):</label>
                 <input type="text" id="obj-l" placeholder="Length">
             </div>
+            <div id="shape-properties" style="display: none; flex-direction: column; gap: 8px; margin-bottom: 8px;"></div>
             <div id="cone-properties" style="display: none; flex-direction: column; gap: 8px; margin-bottom: 8px;">
                 <div class="prop-row" title="Radius of the top face in mm. 0 makes a point.">
                     <label for="obj-cone-top">Top R (mm):</label>
@@ -403,6 +413,6 @@
     <script src="vendor/gsap.min.js"></script>
     <script src="vendor/three/examples/utils/BufferGeometryUtils.js"></script>
     <script src="vendor/three/examples/loaders/SVGLoader.js"></script>
-    <script type="module" src="js/app.js?v=11"></script>
+    <script type="module" src="js/app.js?v=12"></script>
 </body>
 </html>

@@ -793,9 +793,9 @@ async function run() {
     keys('?', { shiftKey: true });
     check('question-mark-opens-the-shortcut-sheet', !!document.querySelector('[role="dialog"][aria-label="Keyboard shortcuts"] kbd'), 'dialog present');
     keys('Escape');
-    check('escape-closes-the-shortcut-sheet', !document.querySelector('[role="dialog"]'), 'closed');
+    check('escape-closes-the-shortcut-sheet', !document.querySelector('[aria-label="Keyboard shortcuts"]'), 'closed');
     byId('btn-help').click();
-    check('help-button-opens-the-shortcut-sheet', !!document.querySelector('[role="dialog"]'), 'dialog present');
+    check('help-button-opens-the-shortcut-sheet', !!document.querySelector('[aria-label="Keyboard shortcuts"]'), 'dialog present');
     byId('dlg-ok').click();
 
     clearScene();
@@ -953,6 +953,54 @@ async function run() {
     check('an-old-cone-loads-at-its-old-size', Math.abs(ok2[3] - ok2[0] - 30) < 0.01 && Math.abs(ok2[4] - ok2[1] - 20) < 0.01, fmt(oldCone));
 
     check('no-uncaught-errors-after-cone', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
+    // 20. Shape library.
+    clearScene();
+    byId('shape-gallery-btn').click();
+    check('gallery-opens-with-every-shape', byId('shape-gallery').classList.contains('active') && document.querySelectorAll('#shape-gallery-grid .gallery-item').length === 13,
+        `items=${document.querySelectorAll('#shape-gallery-grid .gallery-item').length}`);
+    const search = byId('shape-search'); search.value = 'tor'; search.dispatchEvent(new Event('input', { bubbles: true }));
+    const visible = [...document.querySelectorAll('#shape-gallery-grid .gallery-item')].filter(b => b.style.display !== 'none').map(b => b.dataset.shape);
+    check('gallery-search-filters', visible.length === 1 && visible[0] === 'torus', visible.join(','));
+    document.querySelector('#shape-gallery-grid [data-shape="torus"]').click();
+    check('picking-from-the-gallery-adds-the-shape-and-closes-it',
+        !byId('shape-gallery').classList.contains('active') && /Added torus/.test(status()) && byId('shape-properties').style.display === 'flex', status());
+    check('torus-panel-lists-its-fields', ['obj-p-radius', 'obj-p-tube', 'obj-p-steps'].every(id => byId(id)), 'fields present');
+    const torusSig = await sigOf();
+    const tb = b3(torusSig);
+    check('torus-is-30-plus-10-mm-across', Math.abs(tb[3] - tb[0] - 40) < 0.5 && Math.abs(tb[4] - tb[1] - 10) < 0.01 && tb[1] >= -0.001, fmt(torusSig));
+    setBox('obj-p-tube', '3');
+    const thin = await sigOf(); const thinner = b3(thin);
+    check('editing-a-parameter-rebuilds-the-shape', Math.abs(thinner[3] - thinner[0] - 36) < 0.5 && Math.abs(thinner[4] - thinner[1] - 6) < 0.01, `${thin.bounds}`);
+    setBox('obj-p-tube', '60');
+    check('an-impossible-parameter-is-refused-with-a-reason', /ring radius must be larger/.test(status()) && byId('obj-p-tube').value === '3' && sameMesh(await sigOf(), thin), status());
+
+    const savedTorus = await saveAndParse();
+    const torusState = JSON.stringify(savedTorus.undoStack[savedTorus.undoStack.length - 1]);
+    check('shape-parameters-are-saved-not-vertices', torusState.includes('"params":{') && torusState.includes('"tube":0.3') && !torusState.includes('"importId":"'), 'params in state');
+    document.querySelector('[data-shape="cube"]').click();
+    byId('btn-undo').click();
+    check('library-shape-survives-undo', sameMesh(await sigOf(), thin), 'after undo');
+
+    // Every shape in the library adds cleanly, rests on the grid, and exports a closed solid.
+    for (const id of ['wedge', 'roof', 'pyramid', 'prism', 'dome', 'torus', 'tube', 'star', 'heart', 'paraboloid']) {
+        clearScene();
+        document.querySelector(`#shape-gallery-grid [data-shape="${id}"]`).click();
+        const sig = await sigOf();
+        const bb2 = sig && b3(sig);
+        check(`library-${id}-adds-and-exports`, sig && sig.facets > 0 && bb2[1] >= -0.01 && bb2[1] <= 10 && bb2[4] - bb2[1] > 1, `${id}: ${fmt(sig)}`);
+    }
+
+    // A pyramid's side count and a star's points are whole numbers.
+    clearScene();
+    document.querySelector('#shape-gallery-grid [data-shape="pyramid"]').click();
+    setBox('obj-p-sides', '3');
+    const tri = await sigOf();
+    check('pyramid-sides-change-the-facet-count', tri.facets === 6, `${tri.facets} facets`);
+
+    check('escape-closes-the-gallery', (() => { byId('shape-gallery-btn').click(); const open = byId('shape-gallery').classList.contains('active'); keys('Escape'); return open && !byId('shape-gallery').classList.contains('active'); })(), 'closed by Esc');
+
+    check('no-uncaught-errors-after-shapes', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }

@@ -3,6 +3,7 @@ import { importFile, importFormatOf, convertImported, UNIT_MM, ImportError, enco
 import { showFormDialog, showInfoDialog, loadPrefs, savePrefs, describeTransform, describeMeasurement } from './ui.js';
 import { kvGet, kvPut, kvDelete } from './storage.js';
 import { EXPORT_FORMATS, countTriangles } from './exporters.js';
+import { SHAPES, SHAPE_ORDER, buildShape } from './shapes.js';
 import { evaluateParts } from './csg-core.js';
 import { analyzeMesh, repairMesh, describeHealth } from './meshtools.js';
 import { revolveProfile, mirrorPositions, flipWinding, signedVolume, beveledBox, normalizeEdge, frustum } from './modeling.js';
@@ -305,6 +306,7 @@ function init() {
         if (e.target.tagName !== 'INPUT') e.preventDefault();
     });
     
+    buildShapeGallery();
     setupToolbar();
     populateSnapOptions();
     
@@ -1280,6 +1282,7 @@ function setupToolbar() {
         const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT';
         
         if (e.key === 'Escape') {
+            if (document.getElementById('shape-gallery')?.classList.contains('active')) { closeShapeGallery(); return; }
             if (isMeasureMode) toggleMeasureMode();
             else if (isSketchMode) cancelSketch();
             else if (isWiringMode) cancelWire();
@@ -1787,6 +1790,20 @@ function regenerateLeaf(node) {
     historyManager.saveState();
 }
 
+const isParametric = node => !!node && !node.userData.isComposite && !!SHAPES[node.userData.type];
+
+// Edits a library shape's parameters (mm in the UI, cm stored). A value that cannot build a
+// valid shape is refused with the reason and the shape is left as it was.
+function applyShapeParams(node, patch) {
+    const next = { ...(node.userData.params || SHAPES[node.userData.type].defaults), ...patch };
+    try { buildShape(node.userData.type, next); } catch (e) {
+        updateStatus(e.message); selectPropertyNode(node); return;
+    }
+    node.userData.params = next;
+    regenerateLeaf(node);
+    updateStatus(`${SHAPES[node.userData.type].label} updated.`);
+}
+
 const isBevelable = node => !!node && !node.userData.isComposite && (node.userData.type === 'cube' || node.userData.type === 'cone');
 const meanScaleOf = node => (node.scale.x + node.scale.y + node.scale.z) / 3;
 
@@ -1833,6 +1850,36 @@ async function roundEdges() {
 }
 
 // The cone and bevel rows of the properties panel.
+function syncShapeParamRows(node) {
+    const box = document.getElementById('shape-properties');
+    if (!isParametric(node)) { box.style.display = 'none'; box.dataset.shape = ''; return; }
+    const def = SHAPES[node.userData.type], params = node.userData.params || def.defaults;
+    box.style.display = 'flex';
+    if (box.dataset.shape !== node.userData.type) {
+        box.dataset.shape = node.userData.type;
+        box.textContent = '';
+        def.fields.forEach(f => {
+            const row = document.createElement('div'); row.className = 'prop-row';
+            const label = document.createElement('label'); label.htmlFor = 'obj-p-' + f.key; label.textContent = f.count ? `${f.label}:` : `${f.label} (mm):`;
+            const input = document.createElement('input'); input.type = 'text'; input.id = 'obj-p-' + f.key;
+            input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
+            input.addEventListener('change', () => {
+                const target = currentPropertyNode;
+                if (!isParametric(target)) return;
+                const raw = input.value.trim();
+                const v = isNaN(Number(raw)) ? evaluateExpression(raw, getResolvedVariables()) : Number(raw);
+                if (v === null || !isFinite(v)) { selectPropertyNode(target); updateStatus(`"${raw}" is not a number.`); return; }
+                applyShapeParams(target, { [f.key]: f.count ? Math.round(v) : v / 10 });
+            });
+            row.append(label, input); box.appendChild(row);
+        });
+    }
+    def.fields.forEach(f => {
+        const el = document.getElementById('obj-p-' + f.key);
+        if (el && document.activeElement !== el) el.value = String(f.count ? params[f.key] : +(params[f.key] * 10).toFixed(3));
+    });
+}
+
 function setupShapeInputs() {
     const num = id => { const raw = document.getElementById(id).value.trim(); const v = isNaN(Number(raw)) ? evaluateExpression(raw, getResolvedVariables()) : Number(raw); return v === null ? NaN : v; };
     ['obj-cone-top', 'obj-cone-height', 'obj-cone-bottom'].forEach(id => {
@@ -1858,6 +1905,7 @@ function setupShapeInputs() {
 }
 
 function syncShapeInputs(node) {
+    syncShapeParamRows(node);
     const isCone = node.userData.type === 'cone' && !node.userData.isComposite;
     document.getElementById('cone-properties').style.display = isCone ? 'flex' : 'none';
     document.getElementById('bevel-properties').style.display = isBevelable(node) ? 'flex' : 'none';
@@ -2116,18 +2164,24 @@ function addShape(type) {
         case 'cube': geometry = new THREE.BoxGeometry(2, 2, 2); break;
         case 'sphere': geometry = new THREE.SphereGeometry(1.5, 32, 32); break;
         case 'cone': geometry = buildConeGeometry(DEFAULT_CONE, null); break;
+        default:
+            if (!SHAPES[type]) return;
+            geometry = meshFromSoup(buildShape(type, SHAPES[type].defaults));
     }
     const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
         color: Math.random() * 0xffffff, transparent: true, opacity: 0.85, roughness: 0.4, metalness: 0.1
     }));
     
     const worldSnap = unitMode === 'inch' ? snapPrecision * 2.54 : snapPrecision / 10;
-    mesh.position.set(Math.round((Math.random() - 0.5) * 4 / worldSnap) * worldSnap, Math.round(1 / worldSnap) * worldSnap, Math.round((Math.random() - 0.5) * 4 / worldSnap) * worldSnap);
+    geometry.computeBoundingBox();
+    const restY = Math.max(1, Math.ceil(-geometry.boundingBox.min.y / worldSnap) * worldSnap); // stand on the grid whatever the height
+    mesh.position.set(Math.round((Math.random() - 0.5) * 4 / worldSnap) * worldSnap, restY, Math.round((Math.random() - 0.5) * 4 / worldSnap) * worldSnap);
     
     mesh.userData = { type: type, originalGeometry: geometry, bindings: {}, isComposite: false, isHole: false };
     if (type === 'cone') mesh.userData.cone = { ...DEFAULT_CONE };
+    if (SHAPES[type]) mesh.userData.params = { ...SHAPES[type].defaults };
     mesh.uuid = THREE.MathUtils.generateUUID();
-    mesh.name = type.charAt(0).toUpperCase() + type.slice(1) + " " + (shapes.length + 1);
+    mesh.name = (SHAPES[type] ? SHAPES[type].label : type.charAt(0).toUpperCase() + type.slice(1)) + " " + (shapes.length + 1);
     
     geometry.computeBoundingBox();
     const sz = new THREE.Vector3();
@@ -2995,6 +3049,46 @@ function performAlign(axis, valType, targetVal) {
 
 
 
+// --- Shape gallery: a searchable panel of every shape you can add ---
+const ICON = inner => `<g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">${inner}</g>`;
+const BASIC_SHAPES = [
+    { id: 'cube', label: 'Box', icon: ICON('<path d="M12 3 L20 7.5 L20 16.5 L12 21 L4 16.5 L4 7.5 Z"/><path d="M4 7.5 L12 12 L20 7.5 M12 12 L12 21"/>') },
+    { id: 'sphere', label: 'Sphere', icon: ICON('<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="9" ry="3.2"/>') },
+    { id: 'cone', label: 'Cone / Cylinder', icon: ICON('<path d="M9 4 L15 4 L20 19 A8 2.5 0 0 1 4 19 Z"/><ellipse cx="12" cy="4" rx="3" ry="1"/>') }
+];
+
+function closeShapeGallery() {
+    document.getElementById('shape-gallery')?.classList.remove('active');
+    document.getElementById('shape-gallery-btn')?.classList.remove('active');
+}
+
+function buildShapeGallery() {
+    const panel = document.getElementById('shape-gallery'), grid = document.getElementById('shape-gallery-grid');
+    const search = document.getElementById('shape-search'), button = document.getElementById('shape-gallery-btn');
+    if (!panel || !grid || !button) return;
+    const items = [...BASIC_SHAPES, ...SHAPE_ORDER.map(id => ({ id, label: SHAPES[id].label, icon: SHAPES[id].icon }))];
+    items.forEach(item => {
+        const b = document.createElement('button');
+        b.className = 'gallery-item'; b.dataset.shape = item.id; b.dataset.label = item.label.toLowerCase(); b.type = 'button';
+        b.title = `Add ${item.label}`;
+        b.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${item.icon}</svg><span></span>`;
+        b.querySelector('span').textContent = item.label;
+        b.addEventListener('click', closeShapeGallery);
+        grid.appendChild(b);
+    });
+    search.addEventListener('input', () => {
+        const q = search.value.trim().toLowerCase();
+        grid.querySelectorAll('.gallery-item').forEach(b => { b.style.display = !q || b.dataset.label.includes(q) ? '' : 'none'; });
+    });
+    button.addEventListener('click', () => {
+        const open = !panel.classList.contains('active');
+        panel.classList.toggle('active', open); button.classList.toggle('active', open);
+        if (open) { search.value = ''; search.dispatchEvent(new Event('input')); search.focus(); }
+    });
+    // Clicking anywhere else closes it.
+    window.addEventListener('pointerdown', e => { if (panel.classList.contains('active') && !e.target.closest('#shape-gallery, #shape-gallery-btn')) closeShapeGallery(); });
+}
+
 // --- Group booleans ---
 // Groups with more triangles than this are computed in a Web Worker so the page stays
 // responsive; smaller ones run inline, which keeps them instantaneous and synchronous.
@@ -3508,6 +3602,7 @@ function serializeShape(mesh) {
             importFormat: mesh.userData.importFormat || null,
             edge: mesh.userData.edge ? { ...mesh.userData.edge } : null,
             cone: mesh.userData.cone ? { ...mesh.userData.cone } : null,
+            params: mesh.userData.params ? { ...mesh.userData.params } : null,
             bindings: mesh.userData.bindings ? { ...mesh.userData.bindings } : {},
             isComposite: !!mesh.userData.isComposite,
             isHole: !!mesh.userData.isHole,
@@ -3583,6 +3678,7 @@ function rebuildLeafGeometry(ud) {
         const geometry = generateHardwareGeometry(ud.type, ud.hwProps || {});
         if (geometry) return geometry;
     }
+    if (SHAPES[ud.type]) return meshFromSoup(buildShape(ud.type, ud.params || {}));
     switch (ud.type) {
         case 'cube': return normalizeEdge(ud.edge) ? buildBeveledCubeGeometry(ud.edge) : new THREE.BoxGeometry(2, 2, 2);
         case 'sphere': return new THREE.SphereGeometry(1.5, 32, 32);
