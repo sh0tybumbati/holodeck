@@ -1548,7 +1548,7 @@ const SHORTCUTS = [
     { heading: 'Selection & editing', rows: [
         ['Click', 'Select a shape'], ['Ctrl+Click', 'Add to / remove from the selection'], ['Shift+Drag', 'Box-select'],
         ['Ctrl+A', 'Select everything'], ['Esc', 'Clear the selection, or leave the active tool'], ['Delete', 'Delete the selection'],
-        ['Ctrl+C / Ctrl+X / Ctrl+V', 'Copy, cut, paste'], ['Ctrl+D', 'Duplicate'], ['Ctrl+G', 'Group'], ['Ctrl+Shift+G', 'Ungroup'] ] },
+        ['Ctrl+C / Ctrl+X / Ctrl+V', 'Copy, cut, paste'], ['Ctrl+D', 'Duplicate; move the copy and press Ctrl+D again to repeat that move'], ['Ctrl+G', 'Group'], ['Ctrl+Shift+G', 'Ungroup'] ] },
     { heading: 'Moving', rows: [
         ['Arrows', 'Nudge along the screen axes by the snap size'], ['Shift+Arrows', 'Nudge 10× the snap size'],
         ['Ctrl+Arrows', 'Nudge half the snap size'], ['Ctrl+Shift+Arrows', 'Nudge a tenth of the snap size'],
@@ -1676,19 +1676,46 @@ function selectAll(list) {
     list.forEach(m => selectShape(m, { ctrlKey: true }));
 }
 
+// Duplicate, and repeat. The first Ctrl+D drops a copy beside the original. If you then move,
+// rotate or scale that copy and press Ctrl+D again, the next copy gets the same change applied
+// on top of the last one — so a row, a staircase or a spiral is one move plus Ctrl+D, Ctrl+D…
+// With no edit in between, the previous step is simply repeated.
+let repeatState = null; // { bases, current, baseline, deltas, count }
+
 function duplicateSelection() {
     if (selectedShapes.length === 0) { updateStatus('Select something to duplicate.'); return; }
-    const offset = cmPerSnap() * 2;
-    const clones = selectedShapes.map(src => {
+    selectedShapes.forEach(m => m.updateMatrixWorld(true));
+
+    const st = repeatState;
+    const continuing = !!st && st.current.length === selectedShapes.length
+        && st.current.every(m => shapes.includes(m) && selectedShapes.includes(m));
+
+    let bases, deltas;
+    if (continuing) {
+        bases = st.current;
+        const edited = bases.some((m, i) => !m.matrixWorld.equals(st.baseline[i]));
+        // Edited: the change from the shape each was copied from to where it is now.
+        deltas = edited && st.bases.every(m => shapes.includes(m))
+            ? bases.map((m, i) => new THREE.Matrix4().multiplyMatrices(m.matrixWorld, new THREE.Matrix4().copy(st.bases[i].matrixWorld).invert()))
+            : st.deltas;
+    } else {
+        bases = selectedShapes.slice();
+        const offset = cmPerSnap() * 2;
+        deltas = bases.map(() => new THREE.Matrix4().makeTranslation(offset, 0, offset));
+    }
+
+    const clones = bases.map((src, i) => {
         const c = cloneShape(src);
-        c.position.x += offset; c.position.z += offset;
+        new THREE.Matrix4().multiplyMatrices(deltas[i], src.matrixWorld).decompose(c.position, c.quaternion, c.scale);
+        c.updateMatrix(); c.updateMatrixWorld(true);
         addClonedShape(c);
         return c;
     });
     renderBOM();
     selectAll(clones);
+    repeatState = { bases, current: clones, baseline: clones.map(c => c.matrixWorld.clone()), deltas, count: continuing ? st.count + 1 : 1 };
     historyManager.saveState();
-    updateStatus(`Duplicated ${clones.length} shape(s).`);
+    updateStatus(continuing ? `Repeated the last move (copy ${repeatState.count}).` : `Duplicated ${clones.length} shape(s). Move the copy, then Ctrl+D to repeat that move.`);
 }
 
 async function mirrorSelection() {

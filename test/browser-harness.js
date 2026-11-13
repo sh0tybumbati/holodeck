@@ -1002,6 +1002,48 @@ async function run() {
 
     check('no-uncaught-errors-after-shapes', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 
+    // 21. Duplicate and repeat.
+    clearScene();
+    await importViaInput('block.stl', asciiStl(box(20, 10, 30)));
+    keys('d', { ctrlKey: true });
+    setField('obj-px', '3');                 // move the copy 3 cm along X (and its default 0.2 cm in Z stays)
+    keys('d', { ctrlKey: true });
+    keys('d', { ctrlKey: true });
+    const row = await sigOf();
+    check('repeat-replays-the-last-move-for-each-new-copy',
+        row && row.facets === 48 && row.bounds === '[-10.000,0.000,-15.000]..[100.000,10.000,21.000]', fmt(row));
+
+    clearScene();
+    await importViaInput('block.stl', asciiStl(box(20, 10, 30)));
+    keys('d', { ctrlKey: true });
+    keys('d', { ctrlKey: true });
+    keys('d', { ctrlKey: true });
+    const stair = await sigOf();
+    check('plain-ctrl-d-steps-the-default-offset-instead-of-stacking-copies',
+        stair && stair.facets === 48 && stair.bounds === '[-10.000,0.000,-15.000]..[16.000,10.000,21.000]', fmt(stair));
+
+    clearScene();
+    await importViaInput('block.stl', asciiStl(box(20, 10, 30)));
+    keys('d', { ctrlKey: true });
+    setField('obj-ry', '90');                // turn the copy a quarter turn about Y
+    keys('d', { ctrlKey: true });
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+        ...['obj-rx', 'obj-ry', 'obj-rz'].map(id => THREE.MathUtils.degToRad(parseFloat(byId(id).value))), 'XYZ'));
+    check('repeat-also-replays-rotation-so-the-third-copy-is-a-half-turn',
+        (await sigOf()).facets === 36 && Math.abs(q.y) > 0.999, `q=(${q.x.toFixed(3)},${q.y.toFixed(3)},${q.z.toFixed(3)},${q.w.toFixed(3)})`);
+
+    clearScene();
+    await importViaInput('block.stl', asciiStl(box(20, 10, 30)));
+    keys('d', { ctrlKey: true });
+    setField('obj-px', '3');
+    keys('d', { ctrlKey: true });
+    byId('btn-undo').click();                // undo rebuilds the shapes, so the repeat chain must restart
+    keys('a', { ctrlKey: true });
+    keys('d', { ctrlKey: true });
+    check('undo-ends-a-repeat-chain-cleanly', /Duplicated/.test(status()) && !/Repeated/.test(status()), status());
+
+    check('no-uncaught-errors-after-repeat', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
+
     check('no-uncaught-errors', uncaught.length === 0, uncaught.join(' ;; ') || 'none');
 }
 
